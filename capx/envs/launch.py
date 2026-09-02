@@ -45,24 +45,27 @@ class LaunchArgs:
     config_path: str
     """Path to the YAML configuration file defining the environment and task."""
 
-    # Model server configuration
-    server_url: str = "http://127.0.0.1:8110/chat/completions"
-    """URL of the vLLM server's chat completions endpoint."""
+    model: str
+    """Name of the model to query on the server (OpenAI-API-compatible: OpenAI, vLLM, etc.)."""
 
-    model: str = "google/gemini-3.1-pro-preview"
-    """Name of the model to query on from the server_url."""
+    # Model server configuration (all OpenAI-API-compatible; fall back to env vars if unset)
+    server_url: str | None = None
+    """Base URL of the OpenAI-API-compatible server (no /chat/completions suffix). Falls back to the OPENAI_BASE_URL env var, then http://127.0.0.1:8110."""
 
-    temperature: float = 1.0
-    """Sampling temperature for code generation (higher = more random)."""
+    wire: str | None = None
+    """Which OpenAI-compatible surface to call: "chat" (Chat Completions) or "responses" (Responses API). Falls back to the CAPX_LLM_WIRE env var, then "chat"."""
+
+    api_key: str | None = None
+    """API key for authentication with the model server. Falls back to the OPENAI_API_KEY env var."""
+
+    temperature: float | None = None
+    """Sampling temperature for code generation. Omitted from the request unless set."""
 
     max_tokens: int = 2048 * 10
     """Maximum number of tokens to generate in the model response."""
 
-    reasoning_effort: str = "medium"
-    """Effort level for reasoning models (if applicable). Options: minimal, low, medium, high."""
-
-    api_key: str | None = None
-    """Optional API key for authentication with the model server."""
+    reasoning_effort: str | None = None
+    """Effort level for reasoning models. Options: minimal, low, medium, high. Omitted from the request unless set."""
 
     # Execution configuration (can override YAML values)
     use_visual_feedback: bool | None = None
@@ -80,16 +83,17 @@ class LaunchArgs:
     use_legacy_multi_turn_decision_prompt: bool | None = None
     """Whether to use the legacy multi-turn decision prompt."""
 
-    visual_differencing_model: str | None = "google/gemini-3.1-pro-preview"
-    """Model to use for visual differencing."""
+    visual_differencing_model: str | None = None
+    """Model to use for visual differencing. Falls back to `model` if unset."""
 
-    visual_differencing_model_server_url: str | None = (
-        "http://127.0.0.1:8110/chat/completions"
-    )
-    """Server URL of the image differencing model."""
+    visual_differencing_model_server_url: str | None = None
+    """Base URL of the image differencing model's server. Falls back to the OPENAI_BASE_URL env var, then http://127.0.0.1:8110."""
+
+    visual_differencing_wire: str | None = None
+    """Wire protocol for the image differencing model: "chat" or "responses". Falls back to the CAPX_LLM_WIRE env var, then "chat"."""
 
     visual_differencing_model_api_key: str | None = None
-    """API key for authentication with the image differencing model."""
+    """API key for authentication with the image differencing model. Falls back to the OPENAI_API_KEY env var."""
 
     total_trials: int | None = None
     """Total number of trials to run. Overrides the value in the YAML config."""

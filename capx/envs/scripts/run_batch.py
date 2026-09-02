@@ -134,8 +134,11 @@ class BatchLaunchArgs:
     """List of paths to the YAML configuration files to run sequentially."""
 
     # Overrides (mirrored from LaunchArgs to allow global overrides)
-    # server_url: str = "http://0.0.0.0:8009/v1/responses"  # local server for running codex models
-    server_url: str = "http://127.0.0.1:8110/chat/completions"  # local server 
+    server_url: str | None = "http://127.0.0.1:8110"  # local server
+    """Base URL of the OpenAI-API-compatible server (no /chat/completions suffix)."""
+
+    wire: str | None = None
+    """Which OpenAI-compatible surface to call: "chat" or "responses"."""
 
 
     models: list[str] = field(
@@ -159,14 +162,14 @@ class BatchLaunchArgs:
     )
     """Names of the models to query on the vLLM server."""
 
-    temperature: float = 1.0
-    """Sampling temperature for code generation (higher = more random)."""
+    temperature: float | None = None
+    """Sampling temperature for code generation. Omitted from the request unless set."""
 
     max_tokens: int = 2048 * 10
     """Maximum number of tokens to generate in the model response."""
 
-    reasoning_effort: str = "medium"
-    """Effort level for reasoning models (if applicable)."""
+    reasoning_effort: str | None = None
+    """Effort level for reasoning models. Omitted from the request unless set."""
 
     api_key: str | None = None
     """Optional API key for authentication with the model server."""
@@ -238,6 +241,7 @@ def main(args: BatchLaunchArgs) -> None:
                 launch_args = LaunchArgs(
                     config_path=config_path,
                     server_url=args.server_url,
+                    wire=args.wire,
                     model=model,
                     temperature=args.temperature,
                     max_tokens=args.max_tokens,

@@ -14,7 +14,6 @@ from typing import Any
 
 from capx.envs.configs.instantiate import instantiate
 from capx.llm.client import (
-    VLM_MODELS,
     ModelQueryArgs,
     query_model as _query_model,
     query_model_streaming as _query_model_streaming,
@@ -62,16 +61,18 @@ class LaunchArgsCompat:
     """Compatible args structure for _query_model."""
 
     model: str
-    server_url: str
+    server_url: str | None
     api_key: str | None
+    wire: str | None
     max_tokens: int
-    temperature: float
-    reasoning_effort: str
+    temperature: float | None
+    reasoning_effort: str | None
     debug: bool
 
     # Image differencing
     visual_differencing_model: str | None
     visual_differencing_model_server_url: str | None
+    visual_differencing_wire: str | None
     visual_differencing_model_api_key: str | None
 
 
@@ -218,9 +219,10 @@ async def run_trial_async(
 
         # Build image differencing args if needed
         visual_differencing_args = ModelQueryArgs(
-            model=args.visual_differencing_model,
+            model=args.visual_differencing_model or args.model,
             server_url=args.visual_differencing_model_server_url,
             api_key=args.visual_differencing_model_api_key,
+            wire=args.visual_differencing_wire,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             reasoning_effort=args.reasoning_effort,
@@ -232,10 +234,7 @@ async def run_trial_async(
 
         # Build initial visual feedback from the frame captured in the reset thread
         initial_visual_feedback_base64 = None
-        if (
-            (use_visual_feedback and args.model in VLM_MODELS)
-            or (use_img_differencing and visual_differencing_args.model in VLM_MODELS)
-        ) and initial_frame is not None:
+        if (use_visual_feedback or use_img_differencing) and initial_frame is not None:
             from PIL import Image
             initial_visual_feedback_img = Image.fromarray(initial_frame)
             visual_feedback_imgs.append(initial_visual_feedback_img)
@@ -574,10 +573,7 @@ async def run_trial_async(
 
                 # Build visual feedback from the frame captured in the step thread
                 visual_feedback_base64 = None
-                if (
-                    (use_visual_feedback and args.model in VLM_MODELS)
-                    or (use_img_differencing and visual_differencing_args.model in VLM_MODELS)
-                ) and post_step_frame is not None:
+                if (use_visual_feedback or use_img_differencing) and post_step_frame is not None:
                     from PIL import Image as _Image
                     import io as _io, base64 as _b64
                     visual_feedback_img = _Image.fromarray(post_step_frame)

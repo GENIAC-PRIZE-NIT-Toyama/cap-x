@@ -131,16 +131,18 @@ def create_app() -> FastAPI:
             @dataclass
             class MinimalArgs:
                 config_path: str
-                server_url: str = "http://127.0.0.1:8110/chat/completions"
-                model: str = "google/gemini-3.1-pro-preview"
-                temperature: float = 1.0
+                server_url: str | None = None
+                wire: str | None = None
+                model: str = "unspecified"
+                temperature: float | None = None
                 max_tokens: int = 20480
-                reasoning_effort: str = "medium"
+                reasoning_effort: str | None = None
                 api_key: str | None = None
                 use_visual_feedback: bool | None = None
                 use_img_differencing: bool | None = None
-                visual_differencing_model: str | None = "google/gemini-3.1-pro-preview"
-                visual_differencing_model_server_url: str | None = "http://127.0.0.1:8110/chat/completions"
+                visual_differencing_model: str | None = None
+                visual_differencing_model_server_url: str | None = None
+                visual_differencing_wire: str | None = None
                 visual_differencing_model_api_key: str | None = None
                 total_trials: int | None = None
                 num_workers: int | None = None
@@ -194,16 +196,18 @@ def create_app() -> FastAPI:
             @dataclass
             class LoadArgs:
                 config_path: str
-                server_url: str
+                server_url: str | None
                 model: str
-                temperature: float
+                temperature: float | None
                 max_tokens: int
-                reasoning_effort: str = "medium"
+                wire: str | None = None
+                reasoning_effort: str | None = None
                 api_key: str | None = None
                 use_visual_feedback: bool | None = None
                 use_img_differencing: bool | None = None
                 visual_differencing_model: str | None = None
                 visual_differencing_model_server_url: str | None = None
+                visual_differencing_wire: str | None = None
                 visual_differencing_model_api_key: str | None = None
                 total_trials: int | None = 1
                 num_workers: int | None = 1
@@ -221,6 +225,7 @@ def create_app() -> FastAPI:
             load_args = LoadArgs(
                 config_path=config_path,
                 server_url=request.server_url,
+                wire=request.wire,
                 model=request.model,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
@@ -228,6 +233,7 @@ def create_app() -> FastAPI:
                 use_img_differencing=request.use_img_differencing,
                 visual_differencing_model=request.visual_differencing_model,
                 visual_differencing_model_server_url=request.visual_differencing_model_server_url,
+                visual_differencing_wire=request.visual_differencing_wire,
             )
             env_factory, config, _ = await asyncio.to_thread(_load_config, load_args)
 
@@ -254,12 +260,14 @@ def create_app() -> FastAPI:
                 model=request.model,
                 server_url=request.server_url,
                 api_key=None,
+                wire=request.wire,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
-                reasoning_effort="medium",
+                reasoning_effort=None,
                 debug=False,
                 visual_differencing_model=request.visual_differencing_model,
                 visual_differencing_model_server_url=request.visual_differencing_model_server_url,
+                visual_differencing_wire=request.visual_differencing_wire,
                 visual_differencing_model_api_key=None,
             )
 

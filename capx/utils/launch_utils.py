@@ -25,17 +25,9 @@ from capx.envs.configs.loader import DictLoader
 
 # Re-export LLM client symbols for backward compatibility
 from capx.llm.client import (  # noqa: F401
-    CLAUDE_MODELS,
-    ENSEMBLE_CONFIGS,
-    GPT_MODELS,
-    OPENROUTER_MODELS,
-    OPENROUTER_SERVER_URL,
-    OSS_MODELS,
-    VLM_MODELS,
     ModelQueryArgs,
     _completions_to_responses_convert_prompt,
     collapse_text_image_inputs,
-    is_openrouter_model,
     query_model as _query_model,
     query_model_streaming as _query_model_streaming,
     query_model_ensemble as _query_model_ensemble,
@@ -104,9 +96,11 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
     # Merge server URLs and VDM model settings from YAML into args
     # (CLI args take priority; YAML fills in when CLI uses defaults)
     _CLI_DEFAULTS = {
-        "server_url": "http://127.0.0.1:8110/chat/completions",
-        "visual_differencing_model": "google/gemini-3.1-pro-preview",
-        "visual_differencing_model_server_url": "http://127.0.0.1:8110/chat/completions",
+        "server_url": None,
+        "wire": None,
+        "visual_differencing_model": None,
+        "visual_differencing_model_server_url": None,
+        "visual_differencing_wire": None,
         "visual_differencing_model_api_key": None,
     }
     for field, cli_default in _CLI_DEFAULTS.items():

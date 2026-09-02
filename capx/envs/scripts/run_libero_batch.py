@@ -49,15 +49,16 @@ class LiberoBatchLaunchArgs:
         ]
     )
 
-    server_url: str = "http://127.0.0.1:8110/chat/completions"  # local server
+    server_url: str | None = "http://127.0.0.1:8110"  # local server
+    wire: str | None = None
 
     # Output directory base
     output_dir: str = "./outputs/libero_batch_run"
 
     # Other LaunchArgs overrides
-    temperature: float = 1.0
+    temperature: float | None = None
     max_tokens: int = 2048 * 10
-    reasoning_effort: str = "medium"
+    reasoning_effort: str | None = None
     api_key: str | None = None
     use_visual_feedback: bool | None = None
     use_img_differencing: bool | None = None
@@ -188,6 +189,7 @@ def main(args: LiberoBatchLaunchArgs) -> None:
             launch_args = LaunchArgs(
                 config_path=config_path,
                 server_url=args.server_url,
+                wire=args.wire,
                 model=model,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,

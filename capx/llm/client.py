@@ -1,14 +1,24 @@
 """LLM client utilities for querying language models.
 
-Extracted from capx/utils/launch_utils.py to separate LLM query logic
-from launch/config utilities.
+All supported connections are OpenAI-API-compatible (OpenAI itself, vLLM's
+OpenAI-compatible server, or any other OpenAI-compatible proxy). Requests are
+issued via the ``openai`` SDK. A connection is described by three things,
+each settable via CLI arg or environment variable:
+
+- ``wire``: which OpenAI-compatible surface to call, ``"chat"`` (Chat
+  Completions) or ``"responses"`` (Responses API). Env: ``CAPX_LLM_WIRE``.
+- ``server_url``: the API base URL (no ``/chat/completions`` suffix — the
+  SDK appends the right path for the chosen wire). Env: ``OPENAI_BASE_URL``.
+- ``api_key``: bearer credential. Env: ``OPENAI_API_KEY``.
+
+No model name is ever inspected to decide request shape; the caller is
+responsible for choosing a wire/model combination the target server supports.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
 import copy
-import json
 import os
 import random
 import time
@@ -16,74 +26,23 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import requests
+import openai
 
 if TYPE_CHECKING:
     from capx.envs.launch import LaunchArgs
 
 # ---------------------------------------------------------------------------
-# Model constants
+# Connection defaults / env vars
 # ---------------------------------------------------------------------------
+DEFAULT_WIRE = "chat"
+DEFAULT_BASE_URL = "http://127.0.0.1:8110"
+_VALID_WIRES = ("chat", "responses")
 
-GPT_MODELS = [
-    "openai/gpt-5.4",
-    "openai/o4-mini",
-]
-VLM_MODELS = [
-    "google/gemini-3.1-pro-preview",
-    "google/gemini-2.5-flash-lite",
-    "anthropic/claude-opus-4-5",
-    "anthropic/claude-haiku-4-5",
-    "openai/gpt-5.4",
-    "openai/o1",
-    "openai/o4-mini",
-    "deepseek/deepseek-v3.2",
-    "deepseek/deepseek-r1-0528",
-    "deepseek/deepseek-r1",
-    "qwen/qwen3.5-122b-a10b",
-    "moonshotai/kimi-k2",
-]
-CLAUDE_MODELS = ["anthropic/claude-opus-4-5", "anthropic/claude-haiku-4-5"]
-OSS_MODELS = [
-    "deepseek/deepseek-v3.2",
-    "deepseek/deepseek-r1-0528",
-    "deepseek/deepseek-r1",
-    "qwen/qwen3.5-122b-a10b",
-    "moonshotai/kimi-k2",
-]
-OPENROUTER_MODELS = [
-    "openrouter/google/gemini-2.5-pro-preview",
-    "openrouter/google/gemini-2.5-flash-preview",
-    "openrouter/anthropic/claude-sonnet-4",
-    "openrouter/anthropic/claude-opus-4",
-    "openrouter/deepseek/deepseek-r1",
-    "openrouter/deepseek/deepseek-chat-v3-0324",
-    "openrouter/openai/gpt-4.1",
-    "openrouter/openai/o4-mini",
-    "openrouter/meta-llama/llama-4-maverick",
-    "openrouter/qwen/qwen3-235b-a22b",
-]
-OPENROUTER_SERVER_URL = "http://localhost:8110/chat/completions"
+_RETRYABLE_STATUS_CODES = {404, 500, 502, 503, 504}
 
 # ---------------------------------------------------------------------------
-# Ensemble configuration
+# Config dataclass
 # ---------------------------------------------------------------------------
-
-ENSEMBLE_CONFIGS = [
-    # Gemini-3-Pro only — best single model per CaP-Bench (Figure 1).
-    # 3 temps for diversity; synthesis still uses Gemini-3-Pro.
-    # ~45% faster than full multimodel (no Claude/GPT latency bottleneck).
-    ("openai/gpt-5.4", [0.1, 0.5, 0.9]),
-]
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-
-
-def is_openrouter_model(model: str) -> bool:
-    """Return True if the model should be routed through the OpenRouter proxy."""
-    return model.startswith("openrouter/") or model in OPENROUTER_MODELS
 
 
 @dataclass
@@ -91,11 +50,12 @@ class ModelQueryArgs:
     """Arguments for querying a model."""
 
     model: str
-    server_url: str
+    server_url: str | None = None
     api_key: str | None = None
-    temperature: float = 0.2
+    wire: str | None = None
+    temperature: float | None = None
     max_tokens: int = 4096
-    reasoning_effort: str = "medium"
+    reasoning_effort: str | None = None
     debug: bool = False
 
 
@@ -173,109 +133,127 @@ def _completions_to_responses_convert_prompt(prompt: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Connection resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_connection(args: "LaunchArgs | ModelQueryArgs") -> tuple[str, str | None, str]:
+    """Resolve (base_url, api_key, wire) from args, falling back to env vars.
+
+    Precedence for each field: explicit non-None value on ``args`` > env var
+    > hardcoded default.
+    """
+    base_url = getattr(args, "server_url", None) or os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL
+    api_key = getattr(args, "api_key", None) or os.getenv("OPENAI_API_KEY")
+    wire = getattr(args, "wire", None) or os.getenv("CAPX_LLM_WIRE") or DEFAULT_WIRE
+    if wire not in _VALID_WIRES:
+        raise ValueError(f"Invalid wire {wire!r}; expected one of {_VALID_WIRES}")
+    return base_url, api_key, wire
+
+
+def _get_client(base_url: str, api_key: str | None) -> openai.OpenAI:
+    # The SDK refuses to construct a client with api_key=None (it requires a
+    # non-empty string), but many local OpenAI-compatible servers (vLLM,
+    # local proxies) don't require auth at all. Fall back to a placeholder.
+    # max_retries=0: retry policy is handled explicitly by the callers below,
+    # which retry indefinitely on transient server errors.
+    return openai.OpenAI(base_url=base_url, api_key=api_key or "not-needed", max_retries=0)
+
+
+def _build_chat_kwargs(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": args.model,
+        "messages": prompt,
+        "max_tokens": args.max_tokens,
+    }
+    if getattr(args, "temperature", None) is not None:
+        kwargs["temperature"] = args.temperature
+    if getattr(args, "reasoning_effort", None) is not None:
+        kwargs["reasoning_effort"] = args.reasoning_effort
+    return kwargs
+
+
+def _build_responses_kwargs(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": args.model,
+        "input": _completions_to_responses_convert_prompt(prompt),
+        "max_output_tokens": args.max_tokens,
+    }
+    if getattr(args, "temperature", None) is not None:
+        kwargs["temperature"] = args.temperature
+    if getattr(args, "reasoning_effort", None) is not None:
+        kwargs["reasoning"] = {"effort": args.reasoning_effort}
+    return kwargs
+
+
+def _extract_message_reasoning(message: Any) -> str | None:
+    reasoning = getattr(message, "reasoning", None)
+    if reasoning is not None:
+        return reasoning
+    extra = getattr(message, "model_extra", None) or {}
+    return extra.get("reasoning")
+
+
+def _extract_responses_content(response: Any) -> str:
+    message_item = next(item for item in response.output if getattr(item, "type", None) == "message")
+    return "".join(c.text for c in message_item.content if getattr(c, "type", None) == "output_text")
+
+
+# ---------------------------------------------------------------------------
 # Core query functions
 # ---------------------------------------------------------------------------
 
 
-def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
-    """Query vLLM server for code generation.
+def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> dict:
+    """Query an OpenAI-API-compatible server for code generation.
 
     Args:
-        args: Configuration with server URL and model settings
+        args: Configuration with connection (server_url/api_key/wire) and model settings
         prompt: Full prompt containing environment observation and possibly multi-turn decision prompt
     Returns:
-        Model response content
+        Dict with "content" and "reasoning" keys.
     """
+    base_url, api_key, wire = _resolve_connection(args)
+    client = _get_client(base_url, api_key)
 
-    # Route OpenRouter models to the OpenRouter proxy server
-    if is_openrouter_model(args.model):
-        server_url = OPENROUTER_SERVER_URL
-    else:
-        server_url = args.server_url
-
-    if args.model in GPT_MODELS:
-        if "codex" in args.model:
-            prompt = _completions_to_responses_convert_prompt(prompt)
-            payload = {
-                "model": args.model,
-                "input": prompt,
-            }
-        else:
-            payload = {
-                "model": args.model,
-                "reasoning_effort": args.reasoning_effort,
-                "max_completion_tokens": args.max_tokens,  # Total completion tokens = reasoning + output tokens
-                "messages": prompt,
-            }
-    elif is_openrouter_model(args.model):
-        payload = {
-            "model": args.model,
-            "messages": prompt,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-        }
-    elif args.model in CLAUDE_MODELS:
-        payload = {
-            "model": args.model,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "thinking": {"type": "enabled", "budget_tokens": 4096},
-            "messages": prompt,
-        }
-    elif args.model in OSS_MODELS:
-        payload = {
-            "model": args.model,
-            "messages": prompt,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-        }
-    else:
-        payload = {
-            "model": args.model,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "messages": prompt,
-        }
-    headers = {"Content-Type": "application/json"}
-    if args.api_key:
-        headers["Authorization"] = f"Bearer {args.api_key}"
-    elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
-        headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
     start_time = time.time()
-
-    # keep calling until it works
-    response = requests.post(
-        server_url, headers=headers, data=json.dumps(payload), timeout=200
-    )
     retry = 1
-    while response.status_code in [404, 500, 502, 503, 504]:
-        sleep_time = 240 + random.uniform(-90, 90)
-        print(f"Retry {retry}. Model query failed with status code {response.status_code}. Error: {response.text}. Retrying in {sleep_time} seconds...")
-        time.sleep(sleep_time)
-        response = requests.post(
-            server_url, headers=headers, data=json.dumps(payload), timeout=200
-        )
-        retry += 1
+    while True:
+        try:
+            if wire == "chat":
+                response = client.chat.completions.create(**_build_chat_kwargs(args, prompt))
+            else:
+                response = client.responses.create(**_build_responses_kwargs(args, prompt))
+            break
+        except openai.APIStatusError as exc:
+            if exc.status_code not in _RETRYABLE_STATUS_CODES:
+                raise
+            sleep_time = 240 + random.uniform(-90, 90)
+            print(
+                f"Retry {retry}. Model query failed with status code {exc.status_code}. "
+                f"Error: {exc.message}. Retrying in {sleep_time} seconds..."
+            )
+            time.sleep(sleep_time)
+            retry += 1
 
     end_time = time.time()
     print(f"Time taken to query model: {end_time - start_time:.2f} seconds")
-    response.raise_for_status()
-    body = response.json()
-    out = {}
-    if args.debug:
-        print(json.dumps(body, indent=2))
+
+    if getattr(args, "debug", False):
+        print(response.model_dump_json(indent=2))
+
+    out: dict[str, Any] = {}
     try:
-        if args.model in GPT_MODELS and "codex" in args.model:
-            out["content"] = body["output_text"]
+        if wire == "chat":
+            message = response.choices[0].message
+            out["content"] = message.content
+            out["reasoning"] = _extract_message_reasoning(message)
         else:
-            out["content"] = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError) as exc:
-        raise RuntimeError(f"Unexpected response format: {body}") from exc
-    if body.get("choices") is not None:
-        out["reasoning"] = body.get("choices")[0].get("message").get("reasoning", None)
-    else:
-        out["reasoning"] = None
-    return out  # type: ignore[return-value]
+            out["content"] = _extract_responses_content(response)
+            out["reasoning"] = None
+    except (AttributeError, IndexError, StopIteration) as exc:
+        raise RuntimeError(f"Unexpected response format: {response!r}") from exc
+    return out
 
 
 def query_model_streaming(
@@ -290,135 +268,48 @@ def query_model_streaming(
       - {"type": "done", "content": "full content", "reasoning": "full reasoning or None"}
 
     Args:
-        args: Configuration with server URL and model settings
+        args: Configuration with connection (server_url/api_key/wire) and model settings
         prompt: Full prompt containing environment observation
 
     Yields:
         Partial response chunks as they arrive
     """
-    if args.model in GPT_MODELS:
-        payload = {
-            "model": args.model,
-            "reasoning_effort": args.reasoning_effort,
-            "max_completion_tokens": args.max_tokens,
-            "messages": prompt,
-            "stream": True,
-        }
-    elif args.model in CLAUDE_MODELS:
-        payload = {
-            "model": args.model,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "thinking": {"type": "enabled", "budget_tokens": 4096},
-            "messages": prompt,
-            "stream": True,
-        }
-    else:
-        payload = {
-            "model": args.model,
-            "temperature": args.temperature,
-            "max_tokens": args.max_tokens,
-            "messages": prompt,
-            "stream": True,
-        }
-
-    headers = {"Content-Type": "application/json"}
-    if args.api_key:
-        headers["Authorization"] = f"Bearer {args.api_key}"
-    elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
-        headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
+    base_url, api_key, wire = _resolve_connection(args)
+    client = _get_client(base_url, api_key)
 
     full_content = ""
     full_reasoning = ""
 
     start_time = time.time()
 
-    with requests.post(
-        args.server_url,
-        headers=headers,
-        data=json.dumps(payload),
-        timeout=200,
-        stream=True,
-    ) as response:
-        response.raise_for_status()
-
-        content_type = response.headers.get("content-type", "")
-        is_sse = "text/event-stream" in content_type
-        is_json = "application/json" in content_type
-
-        # If it's a regular JSON response (server doesn't support streaming),
-        # fall back to non-streaming behavior
-        if is_json and not is_sse:
-            print("Warning: Server returned JSON instead of SSE stream, falling back to non-streaming")
-            body = response.json()
-            try:
-                full_content = body["choices"][0]["message"]["content"]
-                full_reasoning = body.get("choices", [{}])[0].get("message", {}).get("reasoning")
-                if full_reasoning:
-                    print(f"Reasoning extracted ({len(full_reasoning)} chars)")
-                else:
-                    print("No reasoning returned by model")
-            except (KeyError, IndexError) as exc:
-                raise RuntimeError(f"Unexpected response format: {body}") from exc
-
-            yield {"type": "content_delta", "content": full_content}
-            yield {
-                "type": "done",
-                "content": full_content,
-                "reasoning": full_reasoning if full_reasoning else None,
-            }
-            end_time = time.time()
-            print(f"Time taken to query model (streaming fallback): {end_time - start_time:.2f} seconds")
-            return
-
-        for line in response.iter_lines():
-            if not line:
+    if wire == "chat":
+        stream = client.chat.completions.create(**_build_chat_kwargs(args, prompt), stream=True)
+        for chunk in stream:
+            if not chunk.choices:
                 continue
+            delta = chunk.choices[0].delta
+            content_delta = delta.content or ""
+            if content_delta:
+                full_content += content_delta
+                yield {"type": "content_delta", "content": content_delta}
 
-            line_str = line.decode("utf-8")
-
-            # SSE format: "data: {...}" or "data: [DONE]"
-            if line_str.startswith("data: "):
-                data_str = line_str[6:]  # Remove "data: " prefix
-
-                if data_str == "[DONE]":
-                    break
-
-                try:
-                    data = json.loads(data_str)
-                    choices = data.get("choices", [])
-                    if not choices:
-                        continue
-
-                    delta = choices[0].get("delta", {})
-
-                    # Handle content delta
-                    content_delta = delta.get("content", "")
-                    if content_delta:
-                        full_content += content_delta
-                        yield {"type": "content_delta", "content": content_delta}
-
-                    # Handle reasoning delta (some APIs support this)
-                    reasoning_delta = delta.get("reasoning", "")
-                    if reasoning_delta:
-                        full_reasoning += reasoning_delta
-                        yield {"type": "reasoning_delta", "content": reasoning_delta}
-
-                except json.JSONDecodeError:
-                    continue
-            else:
-                # Try parsing as raw JSON (non-SSE format)
-                try:
-                    data = json.loads(line_str)
-                    choices = data.get("choices", [])
-                    if choices:
-                        delta = choices[0].get("delta", {})
-                        content_delta = delta.get("content", "")
-                        if content_delta:
-                            full_content += content_delta
-                            yield {"type": "content_delta", "content": content_delta}
-                except json.JSONDecodeError:
-                    continue
+            reasoning_delta = ((delta.model_extra or {}).get("reasoning") or "") if delta else ""
+            if reasoning_delta:
+                full_reasoning += reasoning_delta
+                yield {"type": "reasoning_delta", "content": reasoning_delta}
+    else:
+        stream = client.responses.create(**_build_responses_kwargs(args, prompt), stream=True)
+        for event in stream:
+            if event.type == "response.output_text.delta":
+                content_delta = event.delta or ""
+                if content_delta:
+                    full_content += content_delta
+                    yield {"type": "content_delta", "content": content_delta}
+            elif event.type == "response.reasoning_summary_text.delta":
+                reasoning_delta = event.delta or ""
+                if reasoning_delta:
+                    full_reasoning += reasoning_delta
+                    yield {"type": "reasoning_delta", "content": reasoning_delta}
 
     end_time = time.time()
     print(f"Time taken to query model (streaming): {end_time - start_time:.2f} seconds")
@@ -437,48 +328,47 @@ def query_model_streaming(
 def query_model_ensemble(
     args: "LaunchArgs | ModelQueryArgs",
     prompt: list[dict],
-    synthesis_model: str = "openai/gpt-5.4",
-    is_multiturn = False
+    synthesis_model: str | None = None,
+    is_multiturn=False,
 ) -> dict[str, Any]:
-    """Query 9 models (3 models x 3 temperatures) and synthesize final output."""
+    """Query the configured model at several temperatures and synthesize final output."""
 
-    def query_single(model: str, temp: float) -> dict:
+    temperatures = [0.1, 0.5, 0.9]
+
+    def query_single(temp: float) -> dict:
         query_args = ModelQueryArgs(
-            model=model,
-            server_url=args.server_url,
-            api_key=args.api_key,
+            model=args.model,
+            server_url=getattr(args, "server_url", None),
+            api_key=getattr(args, "api_key", None),
+            wire=getattr(args, "wire", None),
             temperature=temp,
             max_tokens=args.max_tokens,
-            reasoning_effort=getattr(args, "reasoning_effort", "medium"),
+            reasoning_effort=getattr(args, "reasoning_effort", None),
         )
         try:
             result = query_model(query_args, copy.deepcopy(prompt))
-            return {"model": model, "temp": temp, "content": result["content"], "ok": True}
+            return {"model": args.model, "temp": temp, "content": result["content"], "ok": True}
         except Exception as e:
             error_msg = str(e)
-            print(f"[Multimodel Ensemble] {model} temp={temp} FAILED: {error_msg}")
-            return {"model": model, "temp": temp, "content": error_msg, "ok": False}
+            print(f"[Multimodel Ensemble] {args.model} temp={temp} FAILED: {error_msg}")
+            return {"model": args.model, "temp": temp, "content": error_msg, "ok": False}
 
-    # Build all (model, temp) pairs and query in parallel
-    tasks = [(m, t) for m, temps in ENSEMBLE_CONFIGS for t in temps]
     responses = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=9) as executor:
-        futures = {executor.submit(query_single, m, t): (m, t) for m, t in tasks}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(temperatures)) as executor:
+        futures = {executor.submit(query_single, t): t for t in temperatures}
         for future in concurrent.futures.as_completed(futures):
             resp = future.result()
             responses.append(resp)
-            if resp['ok']:
+            if resp["ok"]:
                 print(f"[Multimodel Ensemble] {resp['model']} temp={resp['temp']} ok={resp['ok']}")
 
     successful = [r for r in responses if r["ok"]]
     if not successful:
-        # Print all errors for debugging
         print("\n=== All ensemble queries failed. Errors: ===")
         for r in responses:
             print(f"  {r['model']} temp={r['temp']}: {r['content']}")
         raise RuntimeError("All ensemble queries failed")
 
-    # Build synthesis prompt
     original_text = ""
     for msg in prompt:
         if msg["role"] == "user":
@@ -493,7 +383,6 @@ def query_model_ensemble(
         for r in successful
     )
 
-    # Detect if this is a multiturn decision (candidates contain REGENERATE/FINISH)
     regenerate_count = sum(1 for r in successful if isinstance(r.get("content"), str) and "REGENERATE" in r["content"])
     finish_count = sum(1 for r in successful if isinstance(r.get("content"), str) and "FINISH" in r["content"])
 
@@ -558,20 +447,20 @@ def query_model_ensemble(
     ]
 
     synth_args = ModelQueryArgs(
-        model=synthesis_model,
-        server_url=args.server_url,
-        api_key=args.api_key,
+        model=synthesis_model or args.model,
+        server_url=getattr(args, "server_url", None),
+        api_key=getattr(args, "api_key", None),
+        wire=getattr(args, "wire", None),
         temperature=0.2,
         max_tokens=args.max_tokens,
     )
     final = query_model(synth_args, synthesis_prompt)
 
-    # Build text content for saving
     candidates_txt = "\n\n".join(
         f"{'='*60}\nModel: {r['model']}\nTemperature: {r['temp']}\nSuccess: {r['ok']}\n{'='*60}\n{r['content']}"
         for r in responses
     )
-    synthesis_txt = f"Model: {synthesis_model}\n\n"
+    synthesis_txt = f"Model: {synth_args.model}\n\n"
     synthesis_txt += f"{'='*60}\nREASONING\n{'='*60}\n{final.get('reasoning') or '(none)'}\n\n"
     synthesis_txt += f"{'='*60}\nOUTPUT\n{'='*60}\n{final['content']}"
 
@@ -588,12 +477,12 @@ def query_single_model_ensemble(
     args: "LaunchArgs | ModelQueryArgs",
     prompt: list[dict],
     model: str,
-    is_multiturn = False,
+    is_multiturn=False,
 ) -> dict[str, Any]:
     """Query the same model 9 times (with temperatures 0.1 to 0.9) and synthesize final output.
 
     Args:
-        args: Configuration with server URL and model settings
+        args: Configuration with connection (server_url/api_key/wire) and model settings
         prompt: Full prompt containing environment observation and possibly multi-turn decision prompt
         model: The model to use for both candidate generation and synthesis
 
@@ -604,11 +493,12 @@ def query_single_model_ensemble(
     def query_single(temp: float) -> dict:
         query_args = ModelQueryArgs(
             model=model,
-            server_url=args.server_url,
-            api_key=args.api_key,
+            server_url=getattr(args, "server_url", None),
+            api_key=getattr(args, "api_key", None),
+            wire=getattr(args, "wire", None),
             temperature=temp,
             max_tokens=args.max_tokens,
-            reasoning_effort=getattr(args, "reasoning_effort", "medium"),
+            reasoning_effort=getattr(args, "reasoning_effort", None),
         )
         try:
             result = query_model(query_args, copy.deepcopy(prompt))
@@ -618,7 +508,6 @@ def query_single_model_ensemble(
             print(f"[Single Model Ensemble] {model} temp={temp} FAILED: {error_msg}")
             return {"model": model, "temp": temp, "content": error_msg, "ok": False}
 
-    # Query same model with 9 different temperatures (0.1 to 0.9)
     temperatures = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
     responses = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=9) as executor:
@@ -626,18 +515,16 @@ def query_single_model_ensemble(
         for future in concurrent.futures.as_completed(futures):
             resp = future.result()
             responses.append(resp)
-            if resp['ok']:
+            if resp["ok"]:
                 print(f"[Single Model Ensemble] {resp['model']} temp={resp['temp']} ok={resp['ok']}")
 
     successful = [r for r in responses if r["ok"]]
     if not successful:
-        # Print all errors for debugging
         print("\n=== All single model ensemble queries failed. Errors: ===")
         for r in responses:
             print(f"  {r['model']} temp={r['temp']}: {r['content']}")
         raise RuntimeError("All single model ensemble queries failed")
 
-    # Build synthesis prompt
     original_text = ""
     for msg in prompt:
         if msg["role"] == "user":
@@ -652,7 +539,6 @@ def query_single_model_ensemble(
         for r in successful
     )
 
-    # Detect if this is a multiturn decision (candidates contain REGENERATE/FINISH)
     regenerate_count = sum(1 for r in successful if isinstance(r.get("content"), str) and "REGENERATE" in r["content"])
     finish_count = sum(1 for r in successful if isinstance(r.get("content"), str) and "FINISH" in r["content"])
 
@@ -674,7 +560,7 @@ def query_single_model_ensemble(
     - You may include brief reasoning first
     - Then output "REGENERATE" on its own line followed by exactly ONE fenced code block, OR output "FINISH" on its own line
     """
-    else: # first generation has no REGEN/FINISH candidates
+    else:  # first generation has no REGEN/FINISH candidates
         synthesis_system_prompt = f"""You are synthesizing {len(successful)} candidate Python solutions into one optimal program.
 
     SYNTHESIS RULES:
@@ -719,14 +605,14 @@ def query_single_model_ensemble(
     # Use the same model for synthesis
     synth_args = ModelQueryArgs(
         model=model,
-        server_url=args.server_url,
-        api_key=args.api_key,
+        server_url=getattr(args, "server_url", None),
+        api_key=getattr(args, "api_key", None),
+        wire=getattr(args, "wire", None),
         temperature=0.2,
         max_tokens=args.max_tokens,
     )
     final = query_model(synth_args, synthesis_prompt)
 
-    # Build text content for saving
     candidates_txt = "\n\n".join(
         f"{'='*60}\nModel: {r['model']}\nTemperature: {r['temp']}\nSuccess: {r['ok']}\n{'='*60}\n{r['content']}"
         for r in responses

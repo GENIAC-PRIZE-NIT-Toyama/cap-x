@@ -28,7 +28,6 @@ from capx.envs.configs.instantiate import instantiate
 from capx.envs.tasks.base import CodeExecutionEnvBase
 
 from capx.llm.client import (
-    VLM_MODELS,
     ModelQueryArgs,
     query_model as _query_model,
     query_model_ensemble as _query_model_ensemble,
@@ -230,8 +229,8 @@ def _capture_initial_visual_feedback(
     use_wrist = config.get("use_wrist_camera", False)
 
     needs_visual = (
-        (config["use_visual_feedback"] and args.model in VLM_MODELS)
-        or (config["use_img_differencing"] and visual_differencing_args.model in VLM_MODELS)
+        config["use_visual_feedback"]
+        or config["use_img_differencing"]
         or config.get("use_video_differencing", False)
     )
     if not (needs_visual and hasattr(env, "render")):
@@ -549,10 +548,7 @@ def _handle_multi_turn_step(
 
     # Capture visual feedback if applicable
     visual_feedback_base64 = None
-    needs_visual = (
-        (config["use_visual_feedback"] and args.model in VLM_MODELS)
-        or (config["use_img_differencing"] and visual_differencing_args.model in VLM_MODELS)
-    )
+    needs_visual = config["use_visual_feedback"] or config["use_img_differencing"]
     if needs_visual and hasattr(env, "render"):
         vf_base64, vf_img = _get_visual_feedback(env)
         visual_feedback_imgs.append(vf_img)
@@ -686,19 +682,15 @@ def _run_single_trial(
     wrist_base64_history: list[str] | None = [] if use_wrist else None
 
     visual_differencing_args = ModelQueryArgs(
-        model=args.visual_differencing_model,
+        model=args.visual_differencing_model or args.model,
         server_url=args.visual_differencing_model_server_url,
         api_key=args.visual_differencing_model_api_key,
+        wire=args.visual_differencing_wire,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         reasoning_effort=args.reasoning_effort,
         debug=args.debug,
     )
-
-    if config["use_img_differencing"] or use_video_diff:
-        assert visual_differencing_args.model in VLM_MODELS, (
-            "Image/video differencing model must be in the list of VLM models"
-        )
 
     # --- 2. Capture initial visual feedback ---
     visual_feedback_imgs, visual_feedback_base64_history, task_description = (
