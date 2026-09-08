@@ -44,20 +44,6 @@ MAX_TRIAL_RETRIES = 3
 # API server helpers
 # ---------------------------------------------------------------------------
 
-# Maps an api_servers[]._target_ to the env var its client module
-# (capx/integrations/...) reads its SERVICE_URL from. _start_api_servers uses
-# this so a config's host/port is the single source of truth for both "is
-# this server already running externally" and "where should client code
-# actually send requests" -- those used to be two disconnected settings,
-# which silently broke client calls whenever an api_servers entry pointed at
-# a remote host.
-_TARGET_TO_SERVICE_ENV_VAR = {
-    "capx.serving.launch_sam3_server.main": "SAM3_SERVICE_URL",
-    "capx.serving.launch_contact_graspnet_server.main": "GRASPNET_SERVICE_URL",
-    "capx.serving.launch_pyroki_server.main": "PYROKI_SERVICE_URL",
-}
-
-
 def _start_api_servers(
     api_servers: list | None, wait_timeout: float = 120.0
 ) -> list:
@@ -75,12 +61,6 @@ def _start_api_servers(
         for api_server in api_servers:
             port = api_server.get("port")
             host = api_server.get("host", "127.0.0.1")
-
-            env_var = _TARGET_TO_SERVICE_ENV_VAR.get(api_server.get("_target_"))
-            if env_var is not None and port is not None:
-                # setdefault: an explicit env var set by the caller still wins.
-                os.environ.setdefault(env_var, f"http://{host}:{port}")
-
             if port is not None:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     if s.connect_ex((host, int(port))) == 0:
