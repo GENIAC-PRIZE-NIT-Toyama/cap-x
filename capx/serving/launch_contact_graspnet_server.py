@@ -41,11 +41,19 @@ _DEVICE: str = "cuda"
 _GPU_SEMAPHORE = asyncio.Semaphore(1)
 
 
+def _run_no_grad(fn, *args, **kwargs):
+    """Run fn with autograd disabled (inference only, no backward graph retained)."""
+    with torch.no_grad():
+        return fn(*args, **kwargs)
+
+
 async def _run_on_gpu(fn, *args, **kwargs):
     """Run a blocking GPU function without blocking the event loop."""
     async with _GPU_SEMAPHORE:
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+        return await loop.run_in_executor(
+            None, functools.partial(_run_no_grad, fn, *args, **kwargs)
+        )
 
 
 def recursive_key_value_assign(d, ks, v):
@@ -548,6 +556,8 @@ def main(device: str = "cuda", port: int = 8115, host: str = "127.0.0.1"):
         logger.warning("No model checkpoint found")
     except Exception as e:
         logger.error(f"Error loading checkpoint: {e}")
+
+    _GRASP_ESTIMATOR.model.eval()
 
     logger.info(f"GraspNet Service initialized on {device}. Starting Uvicorn...")
     uvicorn.run(app, host=host, port=port)
