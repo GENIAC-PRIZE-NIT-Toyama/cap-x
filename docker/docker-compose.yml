@@ -1,0 +1,91 @@
+# Default PerceptionAPI profile (sam3, graspnet, pyroki) as separate
+# services, matching capx/serving/launch_servers.py --profile default.
+#
+# sam3 and graspnet are pinned to specific physical GPUs by UUID (get them
+# with `nvidia-smi --query-gpu=index,uuid,name --format=csv`), since they'll
+# run on different cards (e.g. RTX 2080 Ti / RTX A2000). Set SAM3_GPU_UUID
+# and GRASPNET_GPU_UUID in a .env file (see .env.example) before starting.
+#
+# Usage (run from this docker/ directory, so .env and the build context
+# resolve correctly):
+#   cd docker
+#   cp .env.example .env   # fill in GPU UUIDs (+ HF_TOKEN if sam3 is gated)
+#   docker compose up --build
+
+services:
+  sam3:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+    image: capx-perception-api:latest
+    command: >
+      python -m capx.serving.launch_sam3_server
+      --host 0.0.0.0 --port 8114 --device cuda
+    ports:
+      - "8114:8114"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf_cache:/hf-cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${SAM3_GPU_UUID:?set SAM3_GPU_UUID in .env}"]
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8114/openapi.json', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s # first run downloads the SAM3 checkpoint from HF
+      retries: 3
+    restart: unless-stopped
+
+  graspnet:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+    image: capx-perception-api:latest
+    command: >
+      python -m capx.serving.launch_contact_graspnet_server
+      --host 0.0.0.0 --port 8115 --device cuda
+    ports:
+      - "8115:8115"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GRASPNET_GPU_UUID:?set GRASPNET_GPU_UUID in .env}"]
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8115/openapi.json', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+  pyroki:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+    image: capx-perception-api:latest
+    command: >
+      python -m capx.serving.launch_pyroki_server
+      --host 0.0.0.0 --port 8116
+    ports:
+      - "8116:8116"
+    environment:
+      CUDA_VISIBLE_DEVICES: "" # CPU-only server; keep it off the GPUs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8116/openapi.json', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  hf_cache:

@@ -1,0 +1,36 @@
+# Build context for docker/Dockerfile.
+# Only capx/ (minus a few huge, unused third_party vendor dirs) and the uv
+# project manifests are needed to serve sam3 / graspnet / pyroki.
+
+.git
+.github
+.z
+.venv
+outputs
+web-ui
+node_modules
+
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+# Third-party vendor trees not needed by the perception API servers
+# (sam3 and contact_graspnet_pytorch ARE needed and are not excluded).
+capx/third_party/b1k
+capx/third_party/robosuite
+capx/third_party/LIBERO-PRO
+capx/third_party/libero_dependencies
+capx/third_party/curobo
+capx/third_party/verl
+
+# Large data/demo-only content inside the graspnet vendor dir
+capx/third_party/contact_graspnet_pytorch/test_data
+capx/third_party/contact_graspnet_pytorch/examples
+capx/third_party/contact_graspnet_pytorch/docs
+capx/third_party/contact_graspnet_pytorch/build
+
+WORKSHOP_REFACTOR_PLAN.md

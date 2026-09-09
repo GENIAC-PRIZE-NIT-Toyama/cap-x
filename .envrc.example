@@ -2,3 +2,7 @@
 export CAPX_LLM_WIRE=responses
 export OPENAI_BASE_URL=https://api.openai.com/v1
 export OPENAI_API_KEY=sk-
+
+export SAM3_SERVICE_URL=http://127.0.0.1:8114
+export GRASPNET_SERVICE_URL=http://127.0.0.1:8115
+export PYROKI_SERVICE_URL=http://127.0.0.1:8116

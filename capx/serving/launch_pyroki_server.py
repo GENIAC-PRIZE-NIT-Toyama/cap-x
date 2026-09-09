@@ -10,6 +10,7 @@ from typing import Any, List
 
 import numpy as np
 import pyroki as pk  # type: ignore
+import tyro
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -389,4 +390,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    tyro.cli(main)
