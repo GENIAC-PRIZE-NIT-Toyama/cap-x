@@ -6,3 +6,13 @@ export OPENAI_API_KEY=sk-
 export SAM3_SERVICE_URL=http://127.0.0.1:8114
 export GRASPNET_SERVICE_URL=http://127.0.0.1:8115
 export PYROKI_SERVICE_URL=http://127.0.0.1:8116
+export SAM2_SERVICE_URL=http://127.0.0.1:8113
+export OWLVIT_SERVICE_URL=http://127.0.0.1:8117
+
+# api_servers[] in env_configs YAML no longer carry host/port; the
+# *_SERVICE_URL vars above are the single source of truth for where each
+# perception/motion server lives. By default, launch.py errors out if a
+# server isn't reachable there. Uncomment to instead auto-launch a missing
+# server as a local subprocess (only works when its *_SERVICE_URL resolves
+# to a local host):
+# export CAPX_AUTO_LAUNCH_SERVERS=1

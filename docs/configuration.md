@@ -49,30 +49,44 @@ The `_target_` keys enable Hydra-style lazy instantiation via `capx.envs.configs
 
 ### Perception servers (api_servers)
 
-YAML configs can include an `api_servers` section that **auto-launches** perception servers when the evaluation starts:
+YAML configs declare which perception/motion servers a task needs via `api_servers`:
 
 ```yaml
 api_servers:
   - _target_: capx.serving.launch_sam3_server.main
     device: cuda
-    port: 8114
-    host: 127.0.0.1
 
   - _target_: capx.serving.launch_contact_graspnet_server.main
-    port: 8115
-    host: 127.0.0.1
 
   - _target_: capx.serving.launch_pyroki_server.main
-    port: 8116
-    host: 127.0.0.1
     robot: panda_description
     target_link: panda_hand
 ```
 
-The launcher automatically:
-- Skips servers whose port is already in use (e.g. started externally)
-- Waits for all servers to be ready before running trials
-- Terminates all servers on exit
+Entries only carry `_target_` plus extra kwargs (`device`, `robot`, ...) — **not**
+`host`/`port`. The `*_SERVICE_URL` env vars below are the single source of truth for
+where each server actually lives, so the client that calls it and the check that
+verifies it's running always agree on the same endpoint:
+
+| Server | Env var | Default |
+|---|---|---|
+| SAM3 | `SAM3_SERVICE_URL` | `http://127.0.0.1:8114` |
+| ContactGraspNet | `GRASPNET_SERVICE_URL` | `http://127.0.0.1:8115` |
+| PyRoKi | `PYROKI_SERVICE_URL` | `http://127.0.0.1:8116` |
+| SAM2 | `SAM2_SERVICE_URL` | `http://127.0.0.1:8113` |
+| OWL-ViT | `OWLVIT_SERVICE_URL` | `http://127.0.0.1:8117` |
+
+Before running trials, `launch.py` checks that every server listed in `api_servers`
+is reachable at its resolved `*_SERVICE_URL`:
+- **Reachable**: skipped, assumed already running (e.g. started externally).
+- **Not reachable (default)**: raises a `RuntimeError` and exits immediately, before
+  any environment/robot setup happens. Start the missing server(s) first — see
+  `launch_servers.py` below — or point the env var at one that's already running.
+- **Not reachable, with `CAPX_AUTO_LAUNCH_SERVERS=1` set**: auto-launches it as a
+  local subprocess instead of erroring. This only kicks in when the resolved host is
+  local (`127.0.0.1`/`localhost`/`0.0.0.0`) — a remote `*_SERVICE_URL` always fails
+  validation instead, since launching a local process can't satisfy a remote URL.
+  Auto-launch is **off by default**.
 
 If you prefer to manage servers separately (e.g. for sharing across multiple eval runs), use `launch_servers.py`:
 
@@ -83,7 +97,7 @@ uv run --no-sync --active capx/serving/launch_servers.py --profile default
 | Profile | Servers | GPU Required |
 |---------|---------|-------------|
 | `default` | SAM3 (8114) + ContactGraspNet (8115) + PyRoKi (8116) | Yes (~5 GB VRAM) |
-| `full` | default + OWL-ViT (8118) + SAM2 (8113) | Yes (~14 GB VRAM) |
+| `full` | default + OWL-ViT (8117) + SAM2 (8113) | Yes (~14 GB VRAM) |
 | `minimal` | PyRoKi (8116) only | No (CPU-only) |
 
 ## Adding new LLM providers
