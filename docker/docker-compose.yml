@@ -6,14 +6,16 @@
 # run on different cards (e.g. RTX 2080 Ti / RTX A2000). Set SAM3_GPU_UUID
 # and GRASPNET_GPU_UUID in a .env file (see .env.example) before starting.
 #
-# Usage:
+# Usage (run from this docker/ directory, so .env and the build context
+# resolve correctly):
+#   cd docker
 #   cp .env.example .env   # fill in GPU UUIDs (+ HF_TOKEN if sam3 is gated)
 #   docker compose up --build
 
 services:
   sam3:
     build:
-      context: .
+      context: ../
       dockerfile: docker/Dockerfile
     image: capx-perception-api:latest
     command: >
@@ -42,7 +44,7 @@ services:
 
   graspnet:
     build:
-      context: .
+      context: ../
       dockerfile: docker/Dockerfile
     image: capx-perception-api:latest
     command: >
@@ -67,7 +69,7 @@ services:
 
   pyroki:
     build:
-      context: .
+      context: ../
       dockerfile: docker/Dockerfile
     image: capx-perception-api:latest
     command: >

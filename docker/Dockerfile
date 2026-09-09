@@ -14,8 +14,9 @@
 # only needs an NVIDIA driver + nvidia-container-toolkit.
 #
 # capx/third_party/sam3 and capx/third_party/contact_graspnet_pytorch are
-# git submodules. .dockerignore excludes .git, so the build context relies
-# on them already being checked out on the host:
+# git submodules. Dockerfile.dockerignore (next to this file) excludes .git,
+# so the build context relies on them already being checked out on the host
+# -- run this from the repo root before building:
 #   git submodule update --init capx/third_party/sam3 \
 #       capx/third_party/contact_graspnet_pytorch
 # (a bare `git clone` of this repo leaves those dirs empty).
