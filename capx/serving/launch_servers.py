@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import tyro
 import yaml
@@ -50,6 +51,7 @@ SERVER_REGISTRY: dict[str, dict[str, Any]] = {
     "sam3": {
         "target": "capx.serving.launch_sam3_server",
         "default_port": 8114,
+        "env_var": "SAM3_SERVICE_URL",
         "gpu_required": True,
         "gpu_memory_mb": 3000,
         "extra_args": {"device": "cuda"},
@@ -57,6 +59,7 @@ SERVER_REGISTRY: dict[str, dict[str, Any]] = {
     "graspnet": {
         "target": "capx.serving.launch_contact_graspnet_server",
         "default_port": 8115,
+        "env_var": "GRASPNET_SERVICE_URL",
         "gpu_required": True,
         "gpu_memory_mb": 2000,
         "extra_args": {"device": "cuda"},
@@ -64,6 +67,7 @@ SERVER_REGISTRY: dict[str, dict[str, Any]] = {
     "pyroki": {
         "target": "capx.serving.launch_pyroki_server",
         "default_port": 8116,
+        "env_var": "PYROKI_SERVICE_URL",
         "gpu_required": False,
         "gpu_memory_mb": 0,
         "extra_args": {},
@@ -71,13 +75,18 @@ SERVER_REGISTRY: dict[str, dict[str, Any]] = {
     "sam2": {
         "target": "capx.serving.launch_sam2_server",
         "default_port": 8113,
+        "env_var": "SAM2_SERVICE_URL",
         "gpu_required": True,
         "gpu_memory_mb": 6000,
         "extra_args": {"device": "cuda"},
     },
     "owlvit": {
         "target": "capx.serving.launch_owlvit_server",
-        "default_port": 8118,
+        # NOTE: matches the server's own default (launch_owlvit_server.main)
+        # and the client's default (capx.integrations.vision.owlvit), not the
+        # 8118 previously listed here.
+        "default_port": 8117,
+        "env_var": "OWLVIT_SERVICE_URL",
         "gpu_required": True,
         "gpu_memory_mb": 3000,
         "extra_args": {"device": "cuda"},
@@ -85,6 +94,7 @@ SERVER_REGISTRY: dict[str, dict[str, Any]] = {
     "curobo": {
         "target": "capx.serving.launch_curobo_server",
         "default_port": 8117,
+        "env_var": "CUROBO_SERVICE_URL",
         "gpu_required": True,
         "gpu_memory_mb": 2000,
         "extra_args": {},
@@ -95,6 +105,23 @@ SERVER_REGISTRY: dict[str, dict[str, Any]] = {
 _TARGET_TO_NAME: dict[str, str] = {
     info["target"]: name for name, info in SERVER_REGISTRY.items()
 }
+
+
+def resolve_endpoint(name: str) -> tuple[str, int]:
+    """Resolve the (host, port) a registered server's client actually talks to.
+
+    Reads the server's ``*_SERVICE_URL`` env var (the single source of truth
+    also used by the ``capx.integrations`` clients); falls back to
+    ``127.0.0.1:<default_port>`` when unset. Keeping this resolution in one
+    place ensures the "is it running" check always targets the same
+    host/port the client will actually use.
+    """
+    reg = SERVER_REGISTRY[name]
+    default_port = reg["default_port"]
+    url = os.environ.get(reg["env_var"], f"http://127.0.0.1:{default_port}")
+    parsed = urlparse(url)
+    return parsed.hostname or "127.0.0.1", parsed.port or default_port
+
 
 # ---------------------------------------------------------------------------
 # Predefined Profiles
@@ -236,12 +263,11 @@ def parse_servers_from_yaml(config_path: str) -> list[dict[str, Any]]:
         api_servers:
           - _target_: capx.serving.launch_sam3_server.main
             device: cuda
-            port: 8114
-            host: 127.0.0.1
 
     This function maps each ``_target_`` to the corresponding short name in
-    :data:`SERVER_REGISTRY` and collects any extra keyword arguments from the
-    YAML entry.
+    :data:`SERVER_REGISTRY`, resolves its host/port from the matching
+    ``*_SERVICE_URL`` env var (see :func:`resolve_endpoint`), and collects any
+    extra keyword arguments from the YAML entry.
     """
     path = Path(config_path)
     if not path.exists():
@@ -269,10 +295,11 @@ def parse_servers_from_yaml(config_path: str) -> list[dict[str, Any]]:
             )
             continue
 
+        host, port = resolve_endpoint(name)
         srv: dict[str, Any] = {
             "server": name,
-            "port": entry.get("port", SERVER_REGISTRY[name]["default_port"]),
-            "host": entry.get("host", "127.0.0.1"),
+            "port": port,
+            "host": host,
         }
 
         # Carry over extra args from the YAML (e.g. device, robot, target_link)

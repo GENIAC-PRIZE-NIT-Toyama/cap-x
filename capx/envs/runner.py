@@ -8,6 +8,7 @@ single-trial execution lives in :mod:`capx.envs.trial`.
 from __future__ import annotations
 
 import functools
+import logging
 import os
 import signal
 import sys
@@ -24,6 +25,7 @@ from capx.envs.trial import (
     _build_log_lines,
     _run_single_trial,
 )
+from capx.serving.launch_servers import SERVER_REGISTRY, _TARGET_TO_NAME, resolve_endpoint
 from capx.utils.launch_utils import (
     TrialSummary,
     _print_and_save_summary,
@@ -32,12 +34,48 @@ from capx.utils.launch_utils import (
 )
 from capx.utils.parallel_eval import run_parallel_with_setup
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 TRIAL_TIMEOUT_SECONDS = 1000
 MAX_TRIAL_RETRIES = 3
+
+# Hosts an auto-launched local server process could plausibly bind to.
+# If a *_SERVICE_URL env var points elsewhere (a remote host), spawning a
+# local process would never satisfy requests sent to that URL.
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "0.0.0.0"}
+
+# *_SERVICE_URL may now point at a remote, unreachable host (e.g. down, or
+# blocked by a firewall with no RST/ICMP response) rather than just a local
+# port nobody's listening on -- a plain connect_ex() can then hang for
+# minutes on the OS-level TCP timeout instead of failing fast.
+_PING_TIMEOUT_SECONDS = 2.0
+
+
+def _is_reachable(host: str, port: int, timeout: float = _PING_TIMEOUT_SECONDS) -> bool:
+    """TCP-probe host:port, bounded by `timeout` so an unreachable remote
+    host can't stall startup validation."""
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _auto_launch_enabled() -> bool:
+    """Whether CAPX_AUTO_LAUNCH_SERVERS opts into launching local servers.
+
+    Off by default: a missing server is a validation error, not a reason to
+    silently spin up an unrelated local process (see _start_api_servers).
+    """
+    return os.environ.get("CAPX_AUTO_LAUNCH_SERVERS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -47,30 +85,66 @@ MAX_TRIAL_RETRIES = 3
 def _start_api_servers(
     api_servers: list | None, wait_timeout: float = 120.0
 ) -> list:
-    """Launch any API server sub-processes defined in the config.
+    """Validate (and optionally launch) API servers declared in the config.
 
-    Skips servers whose port is already in use (e.g. started externally).
-    After launching, waits until all servers are accepting connections.
+    Each ``api_servers[]`` entry only carries ``_target_`` plus extra kwargs
+    (device, robot, ...); the host/port to check is always resolved from the
+    corresponding ``*_SERVICE_URL`` env var via :func:`resolve_endpoint`, the
+    same source the ``capx.integrations`` clients use. This guarantees the
+    "is it running" check targets the same endpoint the client will actually
+    call.
+
+    By default, a server that isn't reachable is a hard validation error
+    (fail fast, before any env/robot setup runs). Set
+    ``CAPX_AUTO_LAUNCH_SERVERS=1`` to instead auto-launch it as a local
+    subprocess -- only possible when the resolved host is local, since
+    launching locally can't satisfy a remote *_SERVICE_URL.
     """
     import socket
     import time
 
     procs = []
     ports_to_wait: list[tuple[str, int]] = []
+    missing: list[str] = []
+    auto_launch = _auto_launch_enabled()
+
     if api_servers is not None:
         for api_server in api_servers:
-            port = api_server.get("port")
-            host = api_server.get("host", "127.0.0.1")
-            if port is not None:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    if s.connect_ex((host, int(port))) == 0:
-                        print(f"API server on {host}:{port} already running, skipping")
-                        continue
-            proc = run_server_proc(api_server)
-            procs.append(proc)
-            print(f"API server {api_server} started")
-            if port is not None:
-                ports_to_wait.append((host, int(port)))
+            target = api_server.get("_target_", "").removesuffix(".main")
+            name = _TARGET_TO_NAME.get(target)
+            if name is None:
+                raise ValueError(
+                    f"Unknown api_servers target '{api_server.get('_target_')}' in config. "
+                    f"Known targets: {', '.join(_TARGET_TO_NAME)}"
+                )
+
+            host, port = resolve_endpoint(name)
+            if _is_reachable(host, port):
+                logger.info("API server '%s' on %s:%d already running, skipping", name, host, port)
+                continue
+
+            if auto_launch and host in _LOCAL_HOSTS:
+                proc = run_server_proc({**dict(api_server), "host": host, "port": port})
+                procs.append(proc)
+                logger.info("API server '%s' started locally on %s:%d", name, host, port)
+                ports_to_wait.append((host, port))
+            else:
+                env_var = SERVER_REGISTRY[name]["env_var"]
+                missing.append(
+                    f"  - '{name}' expected at {host}:{port} "
+                    f"(set via {env_var}, currently "
+                    f"{os.environ.get(env_var, '<unset, using default>')})"
+                )
+
+    if missing:
+        raise RuntimeError(
+            "The following api_servers are not reachable:\n"
+            + "\n".join(missing)
+            + "\n\nStart them first (e.g. `capx/serving/launch_servers.py`), "
+            "point the *_SERVICE_URL env var at a server that is already running, "
+            "or set CAPX_AUTO_LAUNCH_SERVERS=1 to auto-launch local ones (only works "
+            "for env vars that resolve to a local host)."
+        )
 
     # Wait for all launched servers to accept connections
     if ports_to_wait:
@@ -79,11 +153,11 @@ def _start_api_servers(
             while time.time() < deadline:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     if s.connect_ex((host, port)) == 0:
-                        print(f"API server on {host}:{port} is ready")
+                        logger.info("API server on %s:%d is ready", host, port)
                         break
                 time.sleep(1.0)
             else:
-                print(f"WARNING: API server on {host}:{port} not ready after {wait_timeout}s")
+                logger.warning("API server on %s:%d not ready after %.0fs", host, port, wait_timeout)
 
     return procs
 
