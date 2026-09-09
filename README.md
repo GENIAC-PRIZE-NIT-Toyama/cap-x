@@ -183,6 +183,79 @@ uv run --no-sync --active capx/envs/launch.py \
 
 ---
 
+## Perception API / PyRoKi / OpenAI 互換 API のセットアップ（日本語）
+
+CaP-X は Perception/Motion サーバー（SAM3, ContactGraspNet, PyRoKi, SAM2, OWL-ViT）と、コード生成に使う LLM を OpenAI 互換 API 経由で呼び出します。どちらの接続先も環境変数（`.envrc`）で指定するのが唯一の情報源です。`env_configs/**/*.yaml` の `api_servers[]` には `host`/`port` は書かず、`_target_` と追加パラメータ（`device` など）のみを持ちます。
+
+### 1. `.envrc` を用意する
+
+```bash
+cp .envrc.example .envrc
+```
+
+`.envrc` を編集して必要な値を設定します。[direnv](https://direnv.net/) を使っていれば `direnv allow .` で `cd` するたびに自動読み込みされ、使っていなければ都度 `source .envrc` してください。
+
+```bash
+# --- OpenAI 互換 API (LLM) ---
+export CAPX_LLM_WIRE=responses                     # "chat" (Chat Completions) か "responses" (Responses API)
+export OPENAI_BASE_URL=https://api.openai.com/v1    # 末尾に /chat/completions は付けない
+export OPENAI_API_KEY=sk-...
+
+# --- Perception / PyRoKi サーバー ---
+export SAM3_SERVICE_URL=http://127.0.0.1:8114
+export GRASPNET_SERVICE_URL=http://127.0.0.1:8115
+export PYROKI_SERVICE_URL=http://127.0.0.1:8116
+export SAM2_SERVICE_URL=http://127.0.0.1:8113
+export OWLVIT_SERVICE_URL=http://127.0.0.1:8117
+
+# サーバーが未起動のときにローカルへ自動起動したい場合のみ有効化（デフォルトOFF）
+# export CAPX_AUTO_LAUNCH_SERVERS=1
+```
+
+> `capx/envs/launch.py` は評価を始める前に、上記の `*_SERVICE_URL` が指すホストへ接続できるか確認します。接続できない場合は **デフォルトではエラーで停止**します（実機やシミュレータのセットアップに入る前に fail-fast させるため）。ローカルに未起動のサーバーがあれば自動的に起動してほしい場合のみ `CAPX_AUTO_LAUNCH_SERVERS=1` を設定してください（`*_SERVICE_URL` がリモートホストを指している場合、この設定をしても自動起動はされずエラーのままです）。
+
+### 2. Perception API / PyRoKi サーバーを起動する
+
+`.envrc` の URL が指すホスト・ポートでサーバーを起動しておきます。
+
+```bash
+# SAM3 + ContactGraspNet + PyRoKi をまとめて起動（GPU自動割り当て）
+uv run --no-sync --active capx/serving/launch_servers.py --profile default
+
+# PyRoKi のみでよい場合（oracle/privileged 評価など、GPU不要）
+uv run --no-sync --active capx/serving/launch_servers.py --profile minimal
+
+# OWL-ViT・SAM2 も含めてすべて起動
+uv run --no-sync --active capx/serving/launch_servers.py --profile full
+
+# 起動せずに割り当て内容だけ確認
+uv run --no-sync --active capx/serving/launch_servers.py --profile default --dry-run
+```
+
+個別に1サーバーだけ起動したい場合は、直接呼び出すこともできます（ポートは `.envrc` の値と合わせてください）。
+
+```bash
+uv run --no-sync --active python -m capx.serving.launch_pyroki_server --port 8116 --host 127.0.0.1
+```
+
+> **SAM3 の認証:** SAM3 の重みは HuggingFace のアクセス権が必要です。[SAM3 リポジトリ](https://github.com/facebookresearch/sam3) でアクセスをリクエストし、`huggingface-cli login` でログインしてください（初回ダウンロード後はキャッシュされます）。
+
+> **別ノードで起動している場合:** すでに別マシン（GPUサーバー等）で Perception/PyRoKi サーバーが起動済みなら、この手順は不要です。`.envrc` の該当する `*_SERVICE_URL` をそのホストのアドレスに向けるだけで、`launch.py` はローカルで起動せずそのサーバーをそのまま使います。
+
+### 3. 評価を実行する
+
+`.envrc` を読み込んだ状態（`direnv` 有効、または `source .envrc` 済み）で、通常どおり `launch.py` を実行するだけです。
+
+```bash
+uv run --no-sync --active capx/envs/launch.py \
+    --config-path env_configs/cube_stack/franka_robosuite_cube_stack.yaml \
+    --model "google/gemini-3.1-pro-preview"
+```
+
+より詳しい設定項目は [docs/configuration.md](docs/configuration.md) を参照してください。
+
+---
+
 ## Documentation
 
 | Guide | Contents |
