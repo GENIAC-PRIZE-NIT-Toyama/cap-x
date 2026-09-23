@@ -1,0 +1,23 @@
+# Build context for docker/Dockerfile.b1k (BEHAVIOR-1K simulation environment)
+
+.git
+.github
+.venv
+outputs
+web-ui
+node_modules
+
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.mp4
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+WORKSHOP_REFACTOR_PLAN.md
+
+# Large datasets (should be mounted via docker run -v, not copied into build context)
+capx/third_party/b1k/datasets/**
+

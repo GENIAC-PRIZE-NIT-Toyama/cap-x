@@ -1,0 +1,95 @@
+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    wget \
+    build-essential \
+    ninja-build \
+    python3 \
+    python3-dev \
+    python3-venv \
+    python-is-python3 \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libice6 \
+    libegl1 \
+    libglu1-mesa \
+    libatomic1 \
+    libgomp1 \
+    libxi6 \
+    libxrandr2 \
+    libxt6 \
+    libxcursor1 \
+    libxinerama1 \
+    libx11-6 \
+    libxext6 \
+    libxrender1 \
+    libvulkan1 \
+    vulkan-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+
+# Enable all NVIDIA driver capabilities
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+
+# Set CUDA environment variables for building extensions
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH="${CUDA_HOME}/bin:${PATH}"
+ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9+PTX"
+
+# Pin Python 3.10 (Isaac Sim wheels are strictly cp310 only)
+ENV UV_PYTHON=3.10
+# Avoid setuptools_scm crash when .git is excluded
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.7.8
+
+WORKDIR /workspace/cap-x
+
+# Copy the repository
+COPY . .
+
+# 1. Install Python 3.10 and sync dependencies without building curobo yet
+RUN uv python install 3.10 && uv sync --no-install-package nvidia-curobo
+
+# 2. Bypass PyTorch's overly strict CUDA version mismatch check
+RUN sed -i 's/raise RuntimeError(CUDA_MISMATCH_MESSAGE/print(CUDA_MISMATCH_MESSAGE/g' \
+    .venv/lib/python3.*/site-packages/torch/utils/cpp_extension.py
+
+# 3. Fix Curobo's C++20 compilation conflict with std::lerp and install into .venv
+RUN cd capx/third_party/curobo && \
+    sed -i '/^inline __device__ __host__ float lerp(float a, float b, float t)$/,+3d' \
+    src/curobo/curobolib/cpp/helper_math.h && \
+    uv pip install ninja && \
+    uv pip install -e . --no-build-isolation
+
+# 4. Prevent OmniGibson from reinstalling Curobo from GitHub
+RUN sed -i 's/nvidia-curobo @ git+https.*/nvidia-curobo"/g' \
+    capx/third_party/b1k/OmniGibson/pyproject.toml || true
+RUN sed -i "s/'nvidia-curobo @ git+https.*/'nvidia-curobo'/g" \
+    capx/third_party/b1k/OmniGibson/setup.py || true
+
+# 5. Prevent uv_install.sh from overriding our patched Curobo
+RUN sed -i '/uv pip install.*curobo/s/^/#/' capx/third_party/b1k/uv_install.sh
+
+# Environment variables for headless simulation, EULA, and activate .venv by default
+ENV OMNI_KIT_ACCEPT_EULA=YES
+ENV OMNIGIBSON_HEADLESS=1
+ENV PATH="/workspace/cap-x/.venv/bin:${PATH}"
+
+# 6. Finalize OmniGibson and Isaac Sim installation (skip 30GB+ dataset to keep build fast and avoid disk full)
+RUN cd capx/third_party/b1k && \
+    ./uv_install.sh
+
+# 7. Register Isaac Sim and bundled USD/Kit dynamic libraries with system linker
+RUN find /workspace/cap-x/.venv/lib/python3.10/site-packages/isaacsim -name "*.so" -exec dirname {} + | sort -u > /etc/ld.so.conf.d/isaacsim.conf && ldconfig
+
+CMD ["/bin/bash"]
+
