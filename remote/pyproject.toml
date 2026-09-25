@@ -37,7 +37,15 @@ dependencies = [
   "tyro>=0.8.5",
   "rich>=13.7",
   "pydantic>=2.7",
+  # 契約の型（capx.agent_api）、RemoteAgentEnv、Bench。
+  # ルートの pyproject を読むが、base が軽く path source が extra で絞られて
+  # いるので、submodule も CUDA も要求しない。
+  # 検証: submodule 未取得の clone で `uv sync` が 66 パッケージで通ること。
+  "capx",
 ]
+
+[tool.uv.sources]
+capx = { path = "..", editable = true }
 
 [project.optional-dependencies]
 dev = [
