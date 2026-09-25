@@ -53,6 +53,28 @@ class CodeExecEnvConfig:
     privileged: bool = False
     enable_render: bool = True
     viser_debug: bool = False
+    expose_env: bool = False
+    """Whether to bind ``env`` and ``APIS`` into the generated code's namespace.
+
+    NOT A SECURITY OR FAIRNESS BOUNDARY. Removing these names only stops
+    *accidental* reach-through; the exposed API helpers are bound methods, so
+    ``goto_pose.__self__._env`` still gets there, as do ``gc.get_objects()``,
+    ``__globals__`` and ``__closure__``. The real boundary is process
+    separation (generated code in one process, the Gym in another, the API
+    reachable only over RPC) -- see docs/RemoteDevelopment.md section 5.
+
+    What it does buy: with ``env`` out of scope, an LLM that fails to find an
+    object through the perception API no longer reaches for
+    ``env.robosuite_env.sim.data`` as the shortest path, which would silently
+    turn "solve it from noisy perception" into "solve it from ground truth"
+    and make scores incomparable. ``privileged`` does not cover this -- that
+    flag only gates what the API layer reports, and ``env`` was injected
+    regardless of it.
+
+    Default False: benchmark runs should not expose it. Set True explicitly
+    for interactive debugging, where ``SimpleExecutor``'s documented
+    closed-loop use of ``env`` is the point.
+    """
 
 
 class SimpleExecutor:
@@ -61,6 +83,12 @@ class SimpleExecutor:
     Executes user code with globals: env (low-level env), APIS (name->api), INPUTS, RESULT.
     The user code may import any installed package and can interact with `env` directly
     for closed-loop control.
+
+    NOT THE LIVE EXECUTION PATH. ``CodeExecutionEnvBase`` constructs one of
+    these but never calls ``run()`` -- ``step()`` goes through
+    ``_exec_user_code()`` instead, which honours ``CodeExecEnvConfig.expose_env``.
+    This class still binds ``env``/``APIS`` unconditionally, so wiring it back
+    in would reopen the namespace that ``expose_env`` closes.
     """
 
     def __init__(self, env: BaseEnv, apis: dict[str, ApiBase]) -> None:
@@ -154,8 +182,9 @@ class CodeExecutionEnvBase(Env):
         obs = self._get_observation()
         # Update dynamic obs while retaining previously defined variables
         self._exec_globals["obs"] = obs
-        self._exec_globals["env"] = self.low_level_env
-        self._exec_globals["APIS"] = self._apis
+        if self.cfg.expose_env:
+            self._exec_globals["env"] = self.low_level_env
+            self._exec_globals["APIS"] = self._apis
         # Ensure API helper functions remain bound/current
         for api in self._apis.values():
             for fn_name, fn in api.functions().items():
@@ -191,13 +220,16 @@ class CodeExecutionEnvBase(Env):
         """
         g: dict[str, Any] = {
             "__name__": "__main__",
-            "env": self.low_level_env,
-            "APIS": self._apis,
             # Populated per-step/reset; keep reference stable across execs
             "INPUTS": {},
             # Users can set and reuse RESULT across steps if desired
             "RESULT": None,
         }
+        # `env` / `APIS` are opt-in: see CodeExecEnvConfig.expose_env for why
+        # this is about comparability, not security.
+        if self.cfg.expose_env:
+            g["env"] = self.low_level_env
+            g["APIS"] = self._apis
         # Bind helper functions from APIs into the global namespace for convenience
         for api in self._apis.values():
             for fn_name, fn in api.functions().items():
