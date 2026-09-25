@@ -144,12 +144,6 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
         "use_multimodel": args.use_multimodel
         if args.use_multimodel is not None
         else configs_dict.get("use_multimodel", False),
-        "web_ui": getattr(args, "web_ui", None)
-        if getattr(args, "web_ui", None) is not None
-        else configs_dict.get("web_ui", False),
-        "web_ui_port": getattr(args, "web_ui_port", None)
-        if getattr(args, "web_ui_port", None) is not None
-        else configs_dict.get("web_ui_port", 8200),
         "save_multiturn_prompts": configs_dict.get("save_multiturn_prompts", False),
     }
 

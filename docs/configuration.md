@@ -23,7 +23,6 @@ uv run --no-sync --active capx/envs/launch.py \
 | `--temperature`     | `1.0`                                    | Sampling temperature                  |
 | `--total-trials`    | from YAML                                | Number of evaluation trials           |
 | `--num-workers`     | from YAML                                | Parallel worker count                 |
-| `--web-ui`          | `False`                                  | Launch interactive web UI             |
 | `--use-oracle-code` | `False`                                  | Run human-written reference solutions |
 
 ## YAML config format

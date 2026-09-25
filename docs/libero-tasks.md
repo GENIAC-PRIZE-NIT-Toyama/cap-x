@@ -38,15 +38,6 @@ EOF
 
 ## Running a Task
 
-### Web UI (recommended for exploration)
-
-```bash
-source .venv-libero/bin/activate
-python capx/envs/launch.py \
-    --config-path env_configs/libero/franka_libero_spatial_0.yaml \
-    --web-ui True
-```
-
 ### Headless evaluation
 
 ```bash
