@@ -176,6 +176,11 @@ nvidia-curobo = ["torch"]
 [tool.uv.workspace]
 exclude = [
     "capx/third_party/b1k",
+    # remote/ は独立した uv プロジェクト（remote/pyproject.toml）。ルート側は
+    # nvidia-curobo などを editable path 依存に持ち、uv がメタデータ生成で
+    # setup.py を実行するため CUDA の無い手元PCでは `uv lock` が失敗する。
+    # 参加者に submodule / CUDA を要求しないため、workspace に含めない。
+    "remote",
 ]
 
 [tool.ruff]
