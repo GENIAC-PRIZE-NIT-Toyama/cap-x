@@ -16,47 +16,68 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 
+# Base stays light enough that `capx.agent_api` and `capx.bench` install
+# without a simulator. remote/ path-depends on this project, and a clone
+# without submodules must still `uv sync` -- so nothing here may be a path or
+# git dependency (see docs/RemoteDevelopment.md section 11).
 dependencies = [
-  "gymnasium>=0.29",
-  "numpy>=1.26",
-  "torch>=2.8",
-  "torchvision>=0.23",
+  # Contract types, Bench, CLI
   "tyro>=0.8.5",
   "pydantic>=2.7",
   "rich>=13.7",
-  "scipy>=1.12",
-  "matplotlib>=3.10",
-  "imageio[ffmpeg]",
   "requests",
   "tqdm",
-  "h5py",
-  "einops",
-  "decord",
-  "pycocotools",
   "pyyaml",
   "omegaconf",
-  "open3d",
-  "pyroki @ git+https://github.com/chungmin99/pyroki.git",
-  "robot_descriptions>=1.16.0",
-  "yourdfpy>=0.0.56",
-  "viser>=0.2.0",
-  "trimesh>=4.4.0",
-  "imageio[ffmpeg]>=0.6.0",
-  "sam3",
-  "msgpack_numpy",
-  "ray==2.48.0",
-  "mediapy>=1.2.5",
-  "uvicorn",
-  "fastapi",
-  "transformers",
-  "openai",
-  "pyrender",
-  "opencv-python-headless",
-  "pillow>=10",
   "cloudpickle",
+  # LLM client
+  "openai",
+  # Images and video the Bench writes (trial.py, video_utils.py, launch_utils.py)
+  "numpy>=1.26",
+  "pillow>=10",
+  "imageio[ffmpeg]>=0.6.0",
+  "mediapy>=1.2.5",
+  # Wire format shared with the worker
+  "msgpack_numpy",
 ]
 
 [project.optional-dependencies]
+# Everything the simulators, perception and motion stack need. Demoted from
+# `dependencies` so that installing capx for the Agent/Bench side does not
+# pull torch, Open3D or the submodule-backed packages. Any simulator extra
+# (robosuite, libero) implies this one.
+env = [
+  "gymnasium>=0.29",
+  "torch>=2.8",
+  "torchvision>=0.23",
+  "scipy>=1.12",
+  "matplotlib>=3.10",
+  "open3d",
+  "trimesh>=4.4.0",
+  "viser>=0.2.0",
+  "pyrender",
+  "opencv-python-headless",
+  "transformers",
+  "robot_descriptions>=1.16.0",
+  "yourdfpy>=0.0.56",
+  # Path/git sources -- these are why base has to stay clean of them
+  "sam3",
+  "pyroki @ git+https://github.com/chungmin99/pyroki.git",
+  # Pulled in by third_party (robosuite / LIBERO / verl), not by capx itself
+  "ray==2.48.0",
+  "h5py",
+  "decord",
+  "pycocotools",
+  "einops",
+]
+
+# The session backend that starts worker containers. Not needed on the
+# participant's machine, which only speaks to it over HTTP.
+server = [
+  "fastapi",
+  "uvicorn",
+]
+
 dev = [
   "pytest>=8",
   "pytest-timeout>=2.3",
@@ -67,6 +88,7 @@ dev = [
 ]
 
 libero = [
+  "capx[env]",
   "libero",
   "robosuite",
   "easydict==1.9",
@@ -80,7 +102,8 @@ libero = [
   "scikit-learn",
 ]
 robosuite = [
-  "robosuite"
+  "capx[env]",
+  "robosuite",
 ]
 molmo = [
   "torch==2.9.1",
@@ -123,10 +146,10 @@ robosuite = [
 libero = [
   { path = "capx/third_party/LIBERO-PRO", extra = "libero", editable = true},
 ]
-verl = { path = "capx/third_party/verl" }
-contact_graspnet_pytorch = { path = "capx/third_party/contact_graspnet_pytorch", editable = true }
-sam3 = { path = "capx/third_party/sam3", editable = true}
-nvidia-curobo = { path = "capx/third_party/curobo", editable = true}
+verl = { path = "capx/third_party/verl", extra = "verl" }
+contact_graspnet_pytorch = { path = "capx/third_party/contact_graspnet_pytorch", extra = "contactgraspnet", editable = true }
+sam3 = { path = "capx/third_party/sam3", extra = "env", editable = true}
+nvidia-curobo = { path = "capx/third_party/curobo", extra = "curobo", editable = true}
 
 [tool.uv]
 environments = [
