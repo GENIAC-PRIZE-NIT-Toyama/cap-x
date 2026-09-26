@@ -60,6 +60,11 @@ env = [
   "transformers",
   "robot_descriptions>=1.16.0",
   "yourdfpy>=0.0.56",
+  # The perception/motion servers (capx/serving/launch_*_server.py) are FastAPI
+  # apps, and capx/utils/launch_utils.py imports both at module scope. Anything
+  # running a simulator needs to be able to start them.
+  "fastapi",
+  "uvicorn",
   # Path/git sources -- these are why base has to stay clean of them
   "sam3",
   "pyroki @ git+https://github.com/chungmin99/pyroki.git",
