@@ -9,8 +9,15 @@
 # (step 2), which is expected to change and should be committed.
 #
 # Prerequisites: submodules checked out, CUDA available, and for step 5 the
-# perception servers on 8114 (SAM3), 8115 (GraspNet), 8116 (PyRoKi).
-# Steps 1-4 need no servers.
+# perception servers running at whatever *_SERVICE_URL points to (.envrc on
+# this deployment). Steps 1-4 need no servers.
+#
+# Start the servers with:
+#     uv run --no-sync --active capx/serving/launch_servers.py --profile default
+#
+# Run this on a clean tree. Step 2 regenerates uv.lock, so discard any local
+# edit to it first:
+#     git checkout uv.lock && git pull
 #
 # Remove this script once the migration lands.
 
@@ -133,11 +140,20 @@ run_check "2. root uv lock resolves" check_root_lock
 run_check "3. robosuite/libero/verl extras resolve" check_extras
 run_check "4. launch.py --help works" check_launch_help
 
-if curl -s --max-time 2 http://127.0.0.1:8114/ >/dev/null 2>&1 \
-   || curl -s --max-time 2 http://127.0.0.1:8116/ >/dev/null 2>&1; then
+# The perception servers are wherever *_SERVICE_URL says -- on this
+# deployment that is 192.168.0.200, not localhost. resolve_endpoint() in
+# capx/serving/launch_servers.py reads the same vars and falls back to
+# 127.0.0.1, so mirror that rather than assuming either.
+SAM3_URL="${SAM3_SERVICE_URL:-http://127.0.0.1:8114}"
+PYROKI_URL="${PYROKI_SERVICE_URL:-http://127.0.0.1:8116}"
+
+if curl -s --max-time 3 "$SAM3_URL/" >/dev/null 2>&1 \
+   || curl -s --max-time 3 "$PYROKI_URL/" >/dev/null 2>&1; then
+  printf "  perception API reachable (%s)\n" "$SAM3_URL"
   run_check "5. oracle reward unchanged with expose_env=False" check_oracle
 else
-  skip_check "5. oracle reward with expose_env=False" "perception servers not reachable on 8114/8116"
+  skip_check "5. oracle reward with expose_env=False" \
+    "no response from $SAM3_URL or $PYROKI_URL -- start them with: uv run --no-sync --active capx/serving/launch_servers.py --profile default"
 fi
 
 printf "\n${BOLD}== summary${NC}\n"
