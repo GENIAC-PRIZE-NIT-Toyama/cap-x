@@ -126,12 +126,17 @@ check_oracle() {
   out=$(uv run --no-sync --active tests/test_environments.py \
           --env_name franka_robosuite_pick_place_code_env 2>&1)
   echo "$out" | tail -25
-  echo "$out" | grep -qiE "NameError.*(env|APIS)" && {
-    echo "  >> oracle code reached for env/APIS -- expose_env broke it"
+  # test_environments.py prints "Success" only when reward == 1.0, and prints
+  # "Reward: <value>" otherwise. Match on that, not on a reward regex -- the
+  # success path never prints the number.
+  if echo "$out" | grep -qx "Success"; then
+    return 0
+  fi
+  if echo "$out" | grep -qiE "NameError.*(env|APIS)"; then
+    echo "  >> generated code reached for env/APIS -- expose_env broke it"
     return 1
-  }
-  echo "$out" | grep -qE "[Rr]eward.*1\.0|reward: 1" && return 0
-  echo "  >> reward was not 1.0; compare against main before this branch"
+  fi
+  echo "  >> no 'Success' line; see the Reward/Info output above"
   return 1
 }
 
