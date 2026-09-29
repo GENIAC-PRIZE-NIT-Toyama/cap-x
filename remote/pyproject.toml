@@ -24,19 +24,9 @@ license = { text = "MIT" }
 dependencies = [
   # LLM
   "openai>=1.40",
-  # ZMQ データ面
-  "pyzmq>=26",
-  "msgpack>=1.0",
-  "msgpack-numpy>=0.4.8",
-  # コントロール面
-  "requests>=2.32",
-  # 画像
-  "numpy>=1.26",
-  "pillow>=10",
-  # CLI / 表示
-  "tyro>=0.8.5",
-  "rich>=13.7",
-  "pydantic>=2.7",
+  # ZMQ データ面・コントロール面・画像・CLI は capx の base 依存から入る
+  # （pyzmq / msgpack / requests / numpy / pillow / tyro / rich / pydantic）。
+  # ここに重ねて書くと、どちらが正か分からなくなる。
   # 契約の型（capx.agent_api）、RemoteAgentEnv、Bench。
   # ルートの pyproject を読むが、base が軽く path source が extra で絞られて
   # いるので、submodule も CUDA も要求しない。

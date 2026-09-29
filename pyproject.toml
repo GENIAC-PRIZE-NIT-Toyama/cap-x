@@ -37,7 +37,10 @@ dependencies = [
   "pillow>=10",
   "imageio[ffmpeg]>=0.6.0",
   "mediapy>=1.2.5",
-  # Wire format shared with the worker
+  # 手元PC と worker の間のデータ面。worker は capx 側で動くので base に置く
+  # （remote/ だけに入れると、GPU マシンで worker が import できない）。
+  "pyzmq>=26",
+  "msgpack>=1.0",
   "msgpack_numpy",
 ]
 
