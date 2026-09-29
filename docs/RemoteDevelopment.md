@@ -594,9 +594,9 @@ Phase 3.5 は次で検証する。
 | Phase | 内容 | 完了条件 |
 | --- | --- | --- |
 | 0A | 信頼境界と契約の明文化 | ネットワーク隔離を実測で確認。スキーマと seed 規約が確定 |
-| 0B | 基準の固定 | 基準ログがリポジトリ内のテストとして再実行できる |
-| 1 | 型と Local ファサード | Phase 0B のテストが通る |
-| 2 | CaPAgent0 の抽出 | Phase 0B のテストが通る（出力が一致） |
+| 0B | 既存テストで基準を取る | oracle と quick スモークの結果を控える |
+| 1 | 型と Local ファサード | oracle が reward 1.0 を出す |
+| 2 | CaPAgent0 の抽出 | oracle と quick スモークが Phase 0B と同程度 |
 | 3 | 設定・CLI 分割と `local/` | 既存 YAML が警告つきで従来どおり動く |
 | 3.5 | 依存分離（extras） | **submodule 無しの clone で `cd remote && uv sync` が通る**。import 衛生テストが通る |
 | 4A | worker コンテナ（Robosuite） | プロセス境界・バッファ・サーバ側採点が動く（request/response のみ） |
@@ -607,19 +607,48 @@ Phase 3.5 は次で検証する。
 | 6 | LIBERO 対応 | LIBERO イメージで remote から 1 trial 回る。ワークショップ main からの移植が主体 |
 | 7 | BEHAVIOR 対応 | 調査から。`capx/third_party/b1k` は uv workspace 外 |
 
-### Phase 0B の比較粒度
+### Phase 0B — 既存のテストで前後を比べる
 
-| 完全一致で見る | 意味的に見る |
-| --- | --- |
-| 生成コード、mock 応答、stdout/stderr、artifact のファイル名、正規化済み JSON | MP4（codec / 解像度 / frame 数 / duration 許容誤差 / 先頭末尾の知覚 hash）、経過時間、確率的な reward 集計 |
+専用の golden 比較は**作らない**。このベンチは同じ条件で走らせても同じ結果に
+ならないので、結果を記録して突き合わせる方式が成立しない。
 
-summary は時刻と絶対パスを除いた canonical JSON で比べる。MuJoCo は CPU アーキテクチャ差で
-浮動小数点誤差が積もるため、x86_64 で取った golden を Apple Silicon で完全一致検証すると
-偽陽性で落ちる。
+確認した事実:
 
-網羅すべきケース: single-turn 成功 / 実行例外 / 空・不正コード / multi-turn REGENERATE /
-FINISH / image differencing / video differencing / wrist camera / LIBERO goal patch /
-timeout / retry / 並列実行 / resume / `task_completed != exec_ok` / seed 伝搬。
+- **reward は連続値**（距離ベース）で、同じ seed でも実行ごとに変わる。
+  即座に例外で終わる——ロボットが 1 ミリも動かない——コードでも
+  0.003 / 0.000 と揺れる
+- **seed は robosuite に渡っていない**。`robosuite_cubes.py:122-125` が
+  `seed` から作るのは capx 側の `self._rng` だけで、`self.robosuite_env.reset()`
+  には渡らない。物体の初期配置を決めるのは robosuite 自身の RNG なので、
+  `seed=1` を指定しても毎回違う配置から始まる
+- oracle の経路は知覚サーバ（SAM3 ほか）の生死に依存する。サーバが落ちていれば
+  `ValueError: No sam3 detections` で終わり、reward も成否も変わる
+
+代わりに既存のものを使う。各フェーズの前後で走らせ、結果が同程度かを見る。
+
+```bash
+# oracle が reward 1.0 を出すか（知覚サーバが要る）
+uv run --no-sync --active tests/test_environments.py \
+    --env_name franka_robosuite_pick_place_code_env
+
+# 10 trial のスモーク（LLM が要る）
+./scripts/regression_test.sh quick
+```
+
+`scripts/regression_test.sh` は `QUICK_MIN_COMPLETED=2`（10 trial 中 2 件以上）の
+ように**幅を持たせた基準**で判定する。揺れる系に対してはこちらが正しい形。
+
+この方式で捕まえられないもの: multi-turn の往復数、`num_regenerations` /
+`num_finishes` の集計、成果物の命名。Phase 2 でそこを移すときは、
+コードレビューで見るしかない。
+
+### seed が効いていない件
+
+上記は今回のリファクタとは独立した問題だが、**設計の前提に関わる**。
+本書 §1 は「同じ seed・同じ予算・同じ指標で評価する」としているが、
+現状 seed は初期配置を固定していない。Agent 同士のスコアを比較するなら、
+`robosuite_env.reset()` に seed を渡すか、robosuite 側の RNG を直接
+シードする必要がある。Phase 5（指標の整備）で扱う。
 
 ## 13. 未決
 
