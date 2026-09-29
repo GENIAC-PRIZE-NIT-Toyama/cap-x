@@ -116,9 +116,15 @@ check_launch_help() {
 # Expect reward 1.0. Needs the perception servers.
 # ---------------------------------------------------------------------------
 check_oracle() {
+  # Not franka_pick_place_code_env: its registered config points `low_level` at
+  # "franka_cubes_low_level", which no simulator registers (the name is
+  # "franka_robosuite_cubes_low_level"). That config has been broken since
+  # 823fcc5 and fails in _build_low_level() before any oracle code runs, so it
+  # says nothing about expose_env. Same for franka_pick_place_multi_code_env
+  # and franka_libero_code_env.
   local out
   out=$(uv run --no-sync --active tests/test_environments.py \
-          --env_name franka_pick_place_code_env 2>&1)
+          --env_name franka_robosuite_pick_place_code_env 2>&1)
   echo "$out" | tail -25
   echo "$out" | grep -qiE "NameError.*(env|APIS)" && {
     echo "  >> oracle code reached for env/APIS -- expose_env broke it"
