@@ -14,14 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import fastapi
 import numpy as np
 import requests
-import uvicorn
 from PIL import Image
 
-from capx.envs.configs.instantiate import instantiate
-from capx.envs.configs.loader import DictLoader
+# capx.envs は import 時に simulator を登録するため、module 冒頭では引かない。
+# この module の prompt / コード抽出ヘルパーは Gym を必要とせず、手元PC の
+# 軽量インストール（remote/）からも使う。Gym を要る関数の中で遅延 import する。
 
 # Re-export LLM client symbols for backward compatibility
 from capx.llm.client import (  # noqa: F401
@@ -60,6 +59,8 @@ class TrialSummary:
 
 def run_server_proc(api_cfg) -> multiprocessing.Process:
     # Make sure we use spawn for CUDA
+    from capx.envs.configs.instantiate import instantiate
+
     ctx = multiprocessing.get_context("spawn")
     proc = ctx.Process(
         target=instantiate,  # child will call main(**cfg) via Hydra-style instantiate
@@ -82,6 +83,8 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
         - merged_config_dict: Execution config with CLI overrides applied
     """
     config_path = os.path.expanduser(args.config_path)
+    from capx.envs.configs.loader import DictLoader
+
     configs_dict = DictLoader.load([config_path])
 
     # Extract environment factory (don't instantiate yet - that happens per worker)

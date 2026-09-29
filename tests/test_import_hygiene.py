@@ -78,6 +78,21 @@ def test_agent_api_has_no_numpy() -> None:
     )
 
 
+def test_components_are_light() -> None:
+    """自作 Agent が使う部品も simulator を引かない。
+
+    `capx/utils/launch_utils.py` が module 冒頭で `capx.envs` を import して
+    いたため、コード抽出を 1 つ使うだけで robosuite まで芋づるで入っていた。
+    Gym が要る関数の中で遅延 import するよう変えた。ここが戻ると
+    `remote/` に simulator が入る。
+    """
+    loaded = _import_in_subprocess("capx.agent_api.components.code_extract")
+    leaked = FORBIDDEN & loaded
+    assert not leaked, (
+        f"code_extract が重い依存を引いている: {sorted(leaked)}"
+    )
+
+
 def test_step_result_has_no_reward_field() -> None:
     """`StepResult` に採点結果が混ざっていないことを型レベルで固定する。
 
