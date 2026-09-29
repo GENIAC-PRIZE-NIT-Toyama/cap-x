@@ -4,7 +4,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, TypeVar, Union
 
-import cv2
 import imageio
 import numpy as np
 from PIL import Image
@@ -56,7 +55,7 @@ def resize_with_pad(
     images: np.ndarray,
     height: int,
     width: int,
-    interpolation: int = cv2.INTER_LINEAR,
+    interpolation: int | None = None,
 ) -> np.ndarray:
     """Resizes an image to a target height and width without distortion by padding with black.
 
@@ -64,7 +63,10 @@ def resize_with_pad(
         images: Input image(s) with shape (h, w, c) or (b, h, w, c)
         height: Target height
         width: Target width
-        interpolation: OpenCV interpolation method (default: cv2.INTER_LINEAR)
+        interpolation: OpenCV interpolation method (default: cv2.INTER_LINEAR).
+            cv2 is imported here rather than at module scope: writing a video
+            does not need OpenCV, and this module is on the Bench's import
+            path, which has to stay installable without a simulator.
 
     Returns:
         Resized and padded image(s) with shape (height, width, c) or (b, height, width, c)
@@ -79,6 +81,11 @@ def resize_with_pad(
     ratio = max(cur_width / width, cur_height / height)
     resized_height = int(cur_height / ratio)
     resized_width = int(cur_width / ratio)
+
+    import cv2
+
+    if interpolation is None:
+        interpolation = cv2.INTER_LINEAR
 
     # Process each image in the batch
     resized_images = np.zeros((batch_size, resized_height, resized_width, channels), dtype=images.dtype)
