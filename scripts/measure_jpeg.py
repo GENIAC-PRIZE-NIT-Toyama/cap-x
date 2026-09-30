@@ -2,8 +2,7 @@
 
 GPU マシンで、robosuite の代表タスクを実際に動かしてフレームを集める:
 
-    uv run --no-sync --active scripts/measure_jpeg.py \
-        env_configs/cube_stack/franka_robosuite_cube_stack.yaml --frames 1000
+    uv run --no-sync --active scripts/measure_jpeg.py
 
 出力は markdown の表。`docs/RemoteDevelopment.md` §6 に貼る。
 """
@@ -45,7 +44,12 @@ def _percentile(values: list[float], q: float) -> float:
     return ordered[min(len(ordered) - 1, int(len(ordered) * q))]
 
 
-def main(config_path: str, /, *, frames: int = 1000) -> None:
+def main(
+    config_path: str = "env_configs/cube_stack/franka_robosuite_cube_stack.yaml",
+    /,
+    *,
+    frames: int = 1000,
+) -> None:
     images = _collect(config_path, frames)
     print(f"{len(images)} 枚、{images[0].shape[1]}x{images[0].shape[0]}\n")
     print("| 形式 | p50 (KB) | p95 (KB) | max (KB) | encode p50 (ms) | encode p95 (ms) |")
