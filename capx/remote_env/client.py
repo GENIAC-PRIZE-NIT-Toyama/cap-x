@@ -60,6 +60,7 @@ class RemoteAgentEnv:
         self._sequence = 0
         self._socket: Any = None
         self._task: TaskSpec | None = None
+        self._steps: list = []
 
         if server_url:
             if not task_id:
@@ -78,7 +79,23 @@ class RemoteAgentEnv:
             raise BudgetExceeded("output_limit", "コードが上限を超えた")
 
         payload = self._call("step", code=code, capture_video=capture_video)
-        return StepResult(**payload["result"])
+        result = StepResult(**payload["result"])
+
+        # Bench は Agent の自己申告ではなく、`step()` を通ったものを記録する。
+        # Remote では worker ではなくここが手元側の Bench なので、ここで控える。
+        from capx.local_env import RecordedStep
+
+        self._steps.append(
+            RecordedStep(
+                code=code,
+                ok=result.ok,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                execution_time_s=result.execution_time_used_s,
+                truncated=result.truncated,
+            )
+        )
+        return result
 
     def render(self, camera: str = "main") -> bytes:
         payload = self._call("render", camera=camera)
@@ -99,7 +116,8 @@ class RemoteAgentEnv:
     # -- Bench 専用 --------------------------------------------------------
 
     def reset_for_trial(self, trial: int, seed: int | None = None) -> TaskSpec:
-        payload = self._call("reset", trial=trial)
+        payload = self._call("reset", trial=trial, seed=seed)
+        self._steps.clear()
         self._task = TaskSpec(**payload["task"])
         return self._task
 
@@ -122,8 +140,8 @@ class RemoteAgentEnv:
 
     @property
     def recorded_steps(self) -> list:
-        """Remote では worker 側が持つ。成果物も worker 側で書く。"""
-        return []
+        """このクライアントを通った `step()` の記録。"""
+        return list(self._steps)
 
     @property
     def inner(self):

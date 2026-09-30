@@ -39,12 +39,14 @@ class RecordedStep:
     ok: bool
     stdout: str
     stderr: str
-    reward: float
-    task_completed: bool | None
-    terminated: bool
-    truncated: bool
     execution_time_s: float
-    frame_range: tuple[int, int]
+    frame_range: tuple[int, int] = (0, 0)
+    # 採点まわり。Local は worker と同じプロセスなので控えられるが、Remote の
+    # クライアントは Agent と同じく採点を知らない（`evaluate()` でだけ取る）。
+    reward: float | None = None
+    task_completed: bool | None = None
+    terminated: bool = False
+    truncated: bool = False
 
 
 @dataclass
@@ -76,8 +78,10 @@ class LocalAgentEnv:
         *,
         record_video: bool = False,
         wrist_camera: bool = False,
+        task_id: str | None = None,
     ) -> None:
         self._env = env
+        self._task_id = task_id
         self._budget = budget or Budget()
         self._record_video = record_video
         self._wrist_camera = wrist_camera
@@ -114,7 +118,7 @@ class LocalAgentEnv:
         self._last_terminated = self._last_truncated = False
 
         return TaskSpec(
-            task_id=getattr(self._env, "task_id", type(self._env).__name__),
+            task_id=self._task_id or type(self._env).__name__,
             seed=seed,
             instruction=info.get("task_prompt") or "",
             api_docs="\n\n".join(

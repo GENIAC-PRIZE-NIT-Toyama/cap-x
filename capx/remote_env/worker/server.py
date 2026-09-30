@@ -92,7 +92,7 @@ class WorkerServer:
 
         if msg.operation == "reset":
             trial = int(msg.payload.get("trial", 1))
-            task = self._env.reset_for_trial(trial)
+            task = self._env.reset_for_trial(trial, msg.payload.get("seed"))
             return {"task": asdict(task)}
 
         if msg.operation == "evaluate":
@@ -229,6 +229,7 @@ def main(
         instantiate(configs_dict["env"]),
         budget=Budget(execution_time_s=execution_time_s, max_steps=max_steps),
         record_video=record_video,
+        task_id=os.path.splitext(os.path.basename(config_path))[0],
     )
     logger.info("env ready")
 

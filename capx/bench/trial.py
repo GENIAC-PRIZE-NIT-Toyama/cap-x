@@ -34,6 +34,7 @@ def run_trial(
     config: dict[str, Any],
     budget: Budget | None = None,
     *,
+    seed: int | None = None,
     allow_reference_code: bool = False,
 ) -> TrialSummary:
     """1 trial を回して `TrialSummary` を返す。
@@ -45,13 +46,15 @@ def run_trial(
         trial: trial 番号。1 始まり。seed にもなる。
         config: 出力先・録画などの Bench 設定。
         budget: 予算。`env` 側で強制される。
+        seed: 省略時は trial 番号（trial は 1 始まり）。現状 robosuite まで
+            届かず初期配置は固定されない（docs/RemoteDevelopment.md 参照）。
         allow_reference_code: True なら `TaskSpec.reference_code` に oracle を
             入れる。`OracleAgent` を回すときだけ。
     """
     started = time.time()
     budget = budget or Budget()
 
-    task = env.reset_for_trial(trial)
+    task = env.reset_for_trial(trial, seed)
     if allow_reference_code:
         oracle = getattr(env.inner, "oracle_code", None)
         if oracle:
