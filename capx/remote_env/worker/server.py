@@ -266,6 +266,7 @@ def main(
     execution_time_s: float = 1000.0,
     max_steps: int = 10,
     frame_budget_mb: int = 900,
+    isolate_policy: bool = True,
 ) -> None:
     """worker を起動する。環境を作り終えてから listen する。
 
@@ -283,8 +284,16 @@ def main(
         raise ValueError(f"{config_path} に `env` がない")
 
     logger.info("building env from %s ...", config_path)
+    code_env = instantiate(configs_dict["env"])
+    if isolate_policy:
+        # 生成コードは別プロセスで動かす。reward・採点は Gym 側にだけ置く。
+        from capx.remote_env.worker.executor import ProcessExecutor
+
+        if getattr(code_env.cfg, "expose_env", False):
+            logger.warning("expose_env は別プロセスでは使えない（env を渡せない）。無視する")
+        code_env.set_process_executor(ProcessExecutor(step_timeout_s=execution_time_s))
     env = LocalAgentEnv(
-        instantiate(configs_dict["env"]),
+        code_env,
         budget=Budget(execution_time_s=execution_time_s, max_steps=max_steps),
         record_video=record_video,
         frame_budget_bytes=frame_budget_mb * 1024 * 1024,

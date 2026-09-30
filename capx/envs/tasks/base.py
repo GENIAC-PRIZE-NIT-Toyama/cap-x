@@ -128,6 +128,9 @@ class CodeExecutionEnvBase(Env):
         #     api.set_env(self.low_level_env)
         self._executor = SimpleExecutor(self.low_level_env, self._apis)
         self._step_count = 0
+        # 生成コードを別プロセスで動かす実行役。worker が設定する。None なら従来どおり
+        # このプロセスで exec する（ローカル実行）。
+        self._process_executor: Any = None
         self.action_space = spaces.Text(max_length=4096)
         self.observation_space = spaces.Dict({"task_prompt": spaces.Text(max_length=4096)})
 
@@ -178,8 +181,17 @@ class CodeExecutionEnvBase(Env):
             docs.append(f"\n{text.strip()}")
         return f"{self._task_prompt}\nAPIs:\n" + "\n".join(docs)
 
+    def set_process_executor(self, executor: Any) -> None:
+        """生成コードを別プロセスで実行する（`capx.remote_env.worker.executor`）。"""
+        self._process_executor = executor
+
+    def _api_functions(self) -> dict[str, Any]:
+        return {n: fn for api in self._apis.values() for n, fn in api.functions().items()}
+
     def _exec_user_code(self, code: str) -> dict[str, Any]:
         obs = self._get_observation()
+        if self._process_executor is not None:
+            return self._process_executor.run(code, obs, self._api_functions())
         # Update dynamic obs while retaining previously defined variables
         self._exec_globals["obs"] = obs
         if self.cfg.expose_env:
@@ -289,6 +301,8 @@ class CodeExecutionEnvBase(Env):
         # Reinitialize globals for a fresh episode and prime INPUTS with the reset observation
         self._init_exec_globals()
         self._exec_globals["INPUTS"] = obs
+        if self._process_executor is not None:
+            self._process_executor.reset(obs, list(self._api_functions()))
         info.update({"task_prompt": self._task_prompt})
         return obs, info
 
