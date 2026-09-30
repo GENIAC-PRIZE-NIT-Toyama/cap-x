@@ -45,6 +45,8 @@ class RemoteAgentEnv:
         budget: Budget | None = None,
         session_id: str = "",
         timeout_s: float = DEFAULT_TIMEOUT_S,
+        curve_server_key: bytes | None = None,
+        curve_keypair: tuple[bytes, bytes] | None = None,
     ) -> None:
         """
         Args:
@@ -53,19 +55,32 @@ class RemoteAgentEnv:
             task_id: backend に渡すタスク名。`env_config` は送らない
                 （任意の `_target_` を受けると任意 import の入口になる）。
             budget: 予算。強制するのは worker 側。
+            curve_server_key: worker の公開鍵。渡すと CURVE で繋ぐ。
+            curve_keypair: 自分の (公開鍵, 秘密鍵)。秘密鍵はこの PC から出ない。
         """
         self._budget = budget or Budget()
         self._timeout_s = timeout_s
         self._session_id = session_id
         self._sequence = 0
         self._socket: Any = None
+        self._server_url: str | None = None
+        self._curve_server_key = curve_server_key
+        self._curve_keypair = curve_keypair
         self._task: TaskSpec | None = None
         self._steps: list = []
 
         if server_url:
             if not task_id:
                 raise ValueError("server_url を使うときは task_id が要る")
-            endpoint, self._session_id = _create_session(server_url, task_id)
+            # 鍵はここで作り、公開鍵だけを backend に渡す。秘密鍵が PC から
+            # 出ないので、HTTP が平文でも盗聴で CURVE が破られない。
+            import zmq
+
+            self._curve_keypair = zmq.curve_keypair()
+            self._server_url = server_url
+            endpoint, self._session_id, self._curve_server_key = _create_session(
+                server_url, task_id, self._curve_keypair[0]
+            )
 
         if not endpoint:
             raise ValueError("endpoint か server_url のどちらかが要る")
@@ -106,12 +121,31 @@ class RemoteAgentEnv:
         if self._socket is None:
             return
         try:
-            self._call("close", timeout_s=10.0)
+            self._call("close", timeout_s=2.0)  # 届かない相手を待たない
         except Exception:
             pass  # 閉じるときの失敗は握りつぶす。どのみち捨てる接続
         finally:
             self._socket.close()
             self._socket = None
+            self._delete_session()
+
+    def _delete_session(self) -> None:
+        """backend にセッションを返す。失敗しても握りつぶす。
+
+        Ctrl-C で抜けると呼ばれない。そのときは backend の idle 回収に任せる。
+        """
+        if not self._server_url or not self._session_id:
+            return
+        try:
+            import requests
+
+            requests.delete(
+                f"{self._server_url.rstrip('/')}/sessions/{self._session_id}",
+                headers=_auth_headers(),
+                timeout=30,
+            )
+        except Exception:
+            pass
 
     # -- Bench 専用 --------------------------------------------------------
 
@@ -161,6 +195,11 @@ class RemoteAgentEnv:
         self._socket = context.socket(zmq.DEALER)
         self._socket.setsockopt(zmq.LINGER, 0)
         self._socket.setsockopt(zmq.MAXMSGSIZE, protocol.MAX_MESSAGE_BYTES)
+        if self._curve_server_key is not None:
+            if self._curve_keypair is None:
+                raise ValueError("curve_server_key には curve_keypair も要る")
+            self._socket.curve_serverkey = self._curve_server_key
+            self._socket.curve_publickey, self._socket.curve_secretkey = self._curve_keypair
         self._socket.connect(self._endpoint)
         logger.info("connected to %s", self._endpoint)
 
@@ -181,14 +220,18 @@ class RemoteAgentEnv:
         self._sequence += 1
         message = protocol.request(operation, session_id=self._session_id, **payload)
         message.sequence = self._sequence
-        self._socket.send(protocol.encode(message))
+        self._send(message)
 
-        deadline = (timeout_s or self._timeout_s)
+        deadline = timeout_s or self._timeout_s
+        # poll の刻みは heartbeat の間隔と残り時間の短い方。短い timeout を
+        # 渡されたのに 1 回目の poll が 15 秒ブロックする、を避ける。
+        slice_s = min(HEARTBEAT_INTERVAL_S, deadline)
         waited = 0.0
         missed_heartbeats = 0
 
         while waited < deadline:
-            if self._socket.poll(int(HEARTBEAT_INTERVAL_S * 1000)):
+            step_s = min(slice_s, deadline - waited)
+            if self._socket.poll(int(step_s * 1000)):
                 raw = self._socket.recv()
                 reply = protocol.decode(raw)
 
@@ -201,7 +244,10 @@ class RemoteAgentEnv:
                     self._raise(reply)
                 return reply.payload
 
-            waited += HEARTBEAT_INTERVAL_S
+            waited += step_s
+            # heartbeat は「長く待っているとき」だけ。短い呼び出しでは要らない。
+            if step_s < HEARTBEAT_INTERVAL_S:
+                continue
             if not self._ping():
                 missed_heartbeats += 1
                 if missed_heartbeats >= HEARTBEAT_FAILURES_ALLOWED:
@@ -214,13 +260,32 @@ class RemoteAgentEnv:
 
         raise EnvUnavailable(f"{operation} が {deadline}s で応答しなかった")
 
+    def _send(self, message: Any) -> None:
+        """送れなければ待たずに `EnvUnavailable` にする。
+
+        `DEALER` は接続が確立するまで送信をキューに積む。許可されていない鍵
+        で繋いだときなど、確立しない相手には積み続けて、キューが満杯になると
+        `send` 自体が戻らなくなる。ブロックさせずに、届かないことを伝える。
+        """
+        import zmq
+
+        from capx.remote_env import protocol
+
+        try:
+            self._socket.send(protocol.encode(message), flags=zmq.NOBLOCK)
+        except zmq.Again as exc:
+            raise EnvUnavailable(
+                f"{self._endpoint} に送れない（接続できていない）。"
+                " 鍵が違うか、worker が居ない"
+            ) from exc
+
     def _ping(self) -> bool:
         from capx.remote_env import protocol
 
         try:
-            self._socket.send(protocol.encode(protocol.request("ping")))
+            self._send(protocol.request("ping"))
             return True
-        except Exception:
+        except EnvUnavailable:
             return False
 
     @staticmethod
@@ -234,15 +299,37 @@ class RemoteAgentEnv:
         raise RuntimeError(message)
 
 
-def _create_session(server_url: str, task_id: str) -> tuple[str, str]:
-    """backend にセッションを作らせ、`(zmq_endpoint, session_id)` を得る。"""
+def _auth_headers() -> dict[str, str]:
+    import os
+
+    token = os.environ.get("CAPX_ENV_SERVER_TOKEN", "")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _create_session(
+    server_url: str, task_id: str, client_public_key: bytes
+) -> tuple[str, str, bytes]:
+    """backend にセッションを作らせる。
+
+    Returns:
+        (zmq_endpoint, session_id, worker の公開鍵)
+    """
     import requests
 
     response = requests.post(
         f"{server_url.rstrip('/')}/sessions",
-        json={"task_id": task_id},
-        timeout=300,
+        json={
+            "task_id": task_id,
+            "client_public_key": client_public_key.decode("ascii"),
+        },
+        headers=_auth_headers(),
+        timeout=600,  # worker の環境構築を待つ
     )
-    response.raise_for_status()
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail", response.text)
+        except Exception:
+            detail = response.text
+        raise RuntimeError(f"セッションを作れなかった（{response.status_code}）: {detail}")
     data = response.json()
-    return data["zmq_endpoint"], data["session_id"]
+    return data["zmq_endpoint"], data["session_id"], data["server_public_key"].encode("ascii")

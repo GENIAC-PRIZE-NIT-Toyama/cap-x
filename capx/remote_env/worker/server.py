@@ -47,6 +47,7 @@ class WorkerServer:
     def __init__(self, env: Any, session_id: str = "") -> None:
         self._env = env
         self._session_id = session_id
+        self._last_activity = time.monotonic()
         self._jobs: queue.Queue[_Job] = queue.Queue()
         self._results: queue.Queue[tuple[bytes, Any]] = queue.Queue()
         self._done: dict[str, Any] = {}  # request_id -> 応答（再送対策）
@@ -109,13 +110,50 @@ class WorkerServer:
 
     # -- I/O スレッド ------------------------------------------------------
 
-    def serve(self, port: int, host: str = "0.0.0.0") -> None:
+    def serve(
+        self,
+        port: int,
+        host: str = "0.0.0.0",
+        *,
+        curve_secret_key: bytes | None = None,
+        allowed_client_keys: set[bytes] | None = None,
+    ) -> None:
+        """待ち受ける。鍵を渡すと CURVE で暗号化し、許可した公開鍵だけ通す。
+
+        鍵なしで起動できるのは開発用。ポートを LAN に開ける本番では必ず渡す
+        ——このソケットは任意の Python を実行する入口なので、暗号化と認証が
+        無いと、到達できる人は誰でも実行できてしまう。
+
+        許可外の鍵と、暗号化なしの接続は、メッセージが `recv` に届く前に
+        遮断される（`tests/test_remote_curve.py`）。
+        """
         import zmq
 
         from capx.remote_env import protocol
 
         context = zmq.Context.instance()
+        authenticator = None
         socket = context.socket(zmq.ROUTER)
+        if curve_secret_key is not None:
+            from zmq.auth.thread import ThreadAuthenticator
+
+            allowed = set(allowed_client_keys or ())
+
+            class _AllowList:
+                def callback(self, domain: str, key: Any) -> bool:
+                    raw = key if isinstance(key, bytes) else str(key).encode()
+                    return raw in allowed
+
+            authenticator = ThreadAuthenticator(context)
+            authenticator.start()
+            authenticator.configure_curve_callback(
+                domain="*", credentials_provider=_AllowList()
+            )
+            socket.curve_server = True
+            socket.curve_secretkey = curve_secret_key
+            logger.info("CURVE on: %d client key(s) allowed", len(allowed))
+        else:
+            logger.warning("CURVE OFF — 開発用。ポートを開けるときは鍵を渡す")
         socket.setsockopt(zmq.LINGER, 0)
         socket.setsockopt(zmq.MAXMSGSIZE, protocol.MAX_MESSAGE_BYTES)
         socket.setsockopt(zmq.SNDHWM, 16)
@@ -157,6 +195,8 @@ class WorkerServer:
         finally:
             self._stop.set()
             socket.close()
+            if authenticator is not None:
+                authenticator.stop()
 
     def _dispatch(self, msg: Any, identity: bytes) -> Any:
         """I/O スレッドで即答できるものは返し、重いものはキューへ。
@@ -169,7 +209,14 @@ class WorkerServer:
         # ping は env を触らないので、step の最中でも即答できる。
         # これが返らないと backend に「死んだ」と誤判定される。
         if msg.operation == "ping":
-            return protocol.response(msg, busy=self._busy, t=time.time())
+            # backend が idle 回収に使う。step の最中は busy なので回収されない。
+            return protocol.response(
+                msg,
+                busy=self._busy,
+                idle_s=time.monotonic() - self._last_activity,
+            )
+
+        self._last_activity = time.monotonic()
 
         if msg.operation == "close":
             self._stop.set()
@@ -233,7 +280,15 @@ def main(
     )
     logger.info("env ready")
 
-    WorkerServer(env, session_id=session_id).serve(port=port, host=host)
+    secret = os.environ.get("CAPX_CURVE_SERVER_SECRET")
+    allowed = os.environ.get("CAPX_CURVE_ALLOWED_CLIENT_KEYS", "")
+    # 秘密鍵は引数ではなく環境変数で受ける（`ps` に出さないため）
+    WorkerServer(env, session_id=session_id).serve(
+        port=port,
+        host=host,
+        curve_secret_key=secret.encode() if secret else None,
+        allowed_client_keys={k.strip().encode() for k in allowed.split(",") if k.strip()},
+    )
 
 
 if __name__ == "__main__":
