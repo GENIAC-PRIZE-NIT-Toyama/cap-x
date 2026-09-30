@@ -378,6 +378,14 @@ def main(
     )
     logger.info("env ready")
 
+    # コンテナの rootfs は読み取り専用（backend が --read-only で起動する）。API の
+    # 一部が作業ディレクトリに相対パスで書く（例: depth_image.jpg）ので、書ける
+    # /tmp に移す。config の読み込みと環境の構築は済んでいるので、相対パスの
+    # config には影響しない。policy プロセスもここを引き継ぐ。
+    import tempfile
+
+    os.chdir(tempfile.gettempdir())
+
     secret = os.environ.get("CAPX_CURVE_SERVER_SECRET")
     allowed = os.environ.get("CAPX_CURVE_ALLOWED_CLIENT_KEYS", "")
     # 秘密鍵は引数ではなく環境変数で受ける（`ps` に出さないため）
