@@ -27,7 +27,7 @@ def main(
     *,
     public_host: str | None = None,
     host: str = "0.0.0.0",
-    port: int = 8200,
+    port: int = 8080,
     port_start: int = 19500,
     port_end: int = 19600,
     max_sessions: int = 20,
