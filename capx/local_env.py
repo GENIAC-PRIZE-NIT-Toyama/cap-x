@@ -79,12 +79,14 @@ class LocalAgentEnv:
         record_video: bool = False,
         wrist_camera: bool = False,
         task_id: str | None = None,
+        frame_budget_bytes: int | None = None,
     ) -> None:
         self._env = env
         self._task_id = task_id
         self._budget = budget or Budget()
         self._record_video = record_video
         self._wrist_camera = wrist_camera
+        self._frame_budget_bytes = frame_budget_bytes
 
         self._steps: list[RecordedStep] = []
         self._execution_time_ns = 0
@@ -107,6 +109,9 @@ class LocalAgentEnv:
         obs, info = self._env.reset(options={"trial": trial}, seed=seed)
 
         if self._record_video and hasattr(self._env, "enable_video_capture"):
+            low = getattr(self._env, "low_level_env", None)
+            if self._frame_budget_bytes is not None and hasattr(low, "set_frame_budget"):
+                low.set_frame_budget(self._frame_budget_bytes)
             self._env.enable_video_capture(
                 True, clear=True, wrist_camera=self._wrist_camera
             )

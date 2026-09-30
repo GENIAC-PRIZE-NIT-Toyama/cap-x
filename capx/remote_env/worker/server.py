@@ -255,6 +255,7 @@ def main(
     record_video: bool = True,
     execution_time_s: float = 1000.0,
     max_steps: int = 10,
+    frame_budget_mb: int = 900,
 ) -> None:
     """worker を起動する。環境を作り終えてから listen する。
 
@@ -276,6 +277,7 @@ def main(
         instantiate(configs_dict["env"]),
         budget=Budget(execution_time_s=execution_time_s, max_steps=max_steps),
         record_video=record_video,
+        frame_budget_bytes=frame_budget_mb * 1024 * 1024,
         task_id=os.path.splitext(os.path.basename(config_path))[0],
     )
     logger.info("env ready")
