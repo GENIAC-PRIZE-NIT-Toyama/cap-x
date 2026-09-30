@@ -118,11 +118,10 @@ class SessionManager:
         if not _looks_like_curve_key(client_public_key):
             raise SessionError("client_public_key が CURVE の公開鍵の形でない", 400)
 
-        # 同じ人の古いセッションは片付ける。Ctrl-C で抜けた残りに塞がれて
-        # 次が作れない、を避ける。
-        for old in [s for s in self._sessions.values() if s.owner == owner]:
-            logger.info("owner %s の前のセッション %s を閉じる", owner, old.session_id)
-            await self.close(old.session_id)
+        # 同じ人が何個でも同時に作れる。ターミナルを 3 つ開けば 3 セッション動く。
+        # 「同じ持ち主が新しく作ったら古いのを閉じる」にすると、それを壊す。
+        # Ctrl-C の残りは trial.py の finally が返し、それでも残った分
+        # （強制終了・PC のスリープ）は idle 回収が拾う。
 
         if len(self._sessions) >= self.config.max_sessions:
             raise SessionError(

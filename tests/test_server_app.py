@@ -87,20 +87,48 @@ def test_secret_key_is_never_in_the_response(client) -> None:
     assert not any("secret" in k.lower() for k in r.json())
 
 
-def test_bob_cannot_see_or_delete_alices_session(client) -> None:
+def test_listing_never_exposes_session_ids(client) -> None:
+    """一覧は空き状況だけ。id を返さない。
+
+    認証なしだと全員が同じ持ち主になる。一覧に id を出すと、他人のセッションを
+    消せてしまう。id は作った本人だけが知っていればよい。
+    """
     created = client.post(
         "/sessions",
         json={"task_id": "cube_stack", "client_public_key": _key()},
         headers=_auth("tokA"),
     ).json()
 
-    assert client.get("/sessions", headers=_auth("tokB")).json()["sessions"] == []
-    # 他人のものは「無い」と答える。存在を教えない
-    deleted = client.delete(f"/sessions/{created['session_id']}", headers=_auth("tokB"))
-    assert deleted.status_code == 404
+    listing = client.get("/sessions", headers=_auth("tokB")).json()
+    assert listing == {"active": 1, "capacity": 20}
+    assert created["session_id"] not in str(listing)
 
+
+def test_bob_cannot_delete_alices_session(client) -> None:
+    created = client.post(
+        "/sessions",
+        json={"task_id": "cube_stack", "client_public_key": _key()},
+        headers=_auth("tokA"),
+    ).json()
+
+    # 他人のものは「無い」と答える。存在を教えない
+    assert client.delete(f"/sessions/{created['session_id']}", headers=_auth("tokB")).status_code == 404
     assert client.delete(f"/sessions/{created['session_id']}", headers=_auth("tokA")).status_code == 200
-    assert client.get("/sessions", headers=_auth("tokA")).json()["sessions"] == []
+    assert client.get("/sessions", headers=_auth("tokA")).json()["active"] == 0
+
+
+def test_one_person_can_open_several_sessions(client) -> None:
+    """ターミナルを 3 つ開けば 3 セッション。互いを閉じない。"""
+    ids = [
+        client.post(
+            "/sessions",
+            json={"task_id": "cube_stack", "client_public_key": _key()},
+            headers=_auth("tokA"),
+        ).json()["session_id"]
+        for _ in range(3)
+    ]
+    assert len(set(ids)) == 3
+    assert client.get("/sessions", headers=_auth("tokA")).json()["active"] == 3
 
 
 def test_unlisted_task_is_400(client) -> None:
@@ -116,3 +144,33 @@ def test_unlisted_task_is_400(client) -> None:
 def test_tasks_lists_the_allowlist(client) -> None:
     tasks = client.get("/tasks", headers=_auth("tokA")).json()["tasks"]
     assert "cube_stack" in tasks
+
+
+@pytest.fixture
+def open_client():
+    """認証なし。既定の起動状態。"""
+    manager = SessionManager(
+        Config(public_host="gpu.example", port_start=19500, port_end=19510),
+        runner=FakeDocker(),
+    )
+    with TestClient(create_app(manager, None, reap=False)) as c:
+        yield c
+
+
+def test_without_tokens_no_header_is_needed(open_client) -> None:
+    """既定は認証なし。参加者の設定にトークンは要らない。"""
+    r = open_client.post(
+        "/sessions", json={"task_id": "cube_stack", "client_public_key": _key()}
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_without_tokens_people_still_cannot_end_each_others_sessions(open_client) -> None:
+    """認証なしでも、他人のセッションは消せない。id を知らないから。"""
+    created = open_client.post(
+        "/sessions", json={"task_id": "cube_stack", "client_public_key": _key()}
+    ).json()
+    guessed = open_client.delete("/sessions/000000000000")
+    assert guessed.status_code == 404
+    assert open_client.get("/sessions").json()["active"] == 1
+    assert created["session_id"] not in str(open_client.get("/sessions").json())

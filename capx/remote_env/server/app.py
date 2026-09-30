@@ -2,14 +2,14 @@
 
     POST   /sessions          {task_id, client_public_key} -> ZMQ の宛先と鍵
     DELETE /sessions/{id}     返す
-    GET    /sessions          自分のセッション
+    GET    /sessions          空き状況（使用中の数と上限）。id は返さない
     GET    /tasks             選べるタスク
     GET    /health
 
-認証は Bearer トークン。ここは平文 HTTP で、トークンは盗聴されうる。信頼境界は
-「組織のネットワーク + VPN」に依存する（docs/RemoteDevelopment.md）。それでも
-データ面（ZMQ）は CURVE で守られていて、トークンが漏れても他人の worker には
-繋がらない——繋ぐには、その人が作ったクライアント鍵の秘密鍵が要る。
+認証は任意。`tokens` を渡したときだけ Bearer トークンを求める。既定は認証なしで、
+すでに LAN に出ている知覚 API のサーバと同じ扱い。認証の有無に関わらず、
+データ面（ZMQ）は CURVE で守られていて、他人の worker には繋がらない——繋ぐには、
+その人が作ったクライアント鍵の秘密鍵が要る。
 """
 
 from __future__ import annotations
@@ -128,12 +128,12 @@ def create_app(
         return {"closed": session_id}
 
     @app.get("/sessions")
-    async def list_sessions(owner: str = Depends(owner_of)) -> dict:
+    async def occupancy(_owner: str = Depends(owner_of)) -> dict:
+        # id は返さない。認証なしだと全員が同じ持ち主になるので、一覧に id を
+        # 出すと、他人のセッションを消せてしまう。id は作った本人だけが知る。
         return {
-            "sessions": [
-                {"session_id": s.session_id, "task_id": s.task_id, "port": s.spec.host_port}
-                for s in manager.list(owner)
-            ]
+            "active": len(manager.list()),
+            "capacity": manager.config.max_sessions,
         }
 
     return app

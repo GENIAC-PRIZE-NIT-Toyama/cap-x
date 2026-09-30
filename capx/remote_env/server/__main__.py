@@ -1,7 +1,11 @@
 """backend を起動する。
 
-    export CAPX_ENV_SERVER_TOKENS="alice:tok1,bob:tok2"
     uv run --no-sync --active -m capx.remote_env.server --public-host 192.168.0.50
+
+既定では認証なし。すでに LAN に出ている知覚 API のサーバ（SAM3 など）も認証なしで、
+それと同じ扱いにしている。ネットワークの外に出す・不特定多数が繋がる場所で使う
+ときだけ、環境変数 CAPX_ENV_SERVER_TOKENS（`名前:トークン` をカンマ区切り）を
+設定すると認証が有効になる。
 
 `--public-host` は手元PC から届く GPU マシンの名前か IP。セッションを作った
 クライアントに、ZMQ の宛先としてそのまま返す。
@@ -11,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 
 import tyro
 
@@ -31,7 +34,6 @@ def main(
     idle_ttl_min: float = 20.0,
     max_lifetime_min: float = 120.0,
     gpu_uuids: str = os.environ.get("CAPX_GPU_UUIDS", ""),
-    no_auth: bool = False,
 ) -> None:
     """
     Args:
@@ -41,23 +43,19 @@ def main(
             省略すると環境変数 CAPX_GPU_UUIDS、それも無ければ全 GPU が見える。
             番号ではなく UUID を使うのは、`nvidia-smi` と CUDA で番号の付け方が
             ずれるマシンがあり、番号だと別のカードを掴むため。
-        no_auth: 認証を無効にする。開発用。ポートを開けた状態では使わない。
     """
     import uvicorn
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    if no_auth:
-        tokens = None
-        logging.warning("認証なし（--no-auth）。開発用")
-    else:
-        spec = os.environ.get("CAPX_ENV_SERVER_TOKENS", "")
-        if not spec:
-            sys.exit(
-                "CAPX_ENV_SERVER_TOKENS が未設定。例: alice:tok1,bob:tok2\n"
-                "（開発で認証を外すなら --no-auth）"
-            )
-        tokens = parse_tokens(spec)
+    spec = os.environ.get("CAPX_ENV_SERVER_TOKENS", "")
+    tokens = parse_tokens(spec) if spec else None
+    if tokens is None:
+        logging.warning(
+            "認証なしで起動（CAPX_ENV_SERVER_TOKENS 未設定）。繋がれる人は誰でも"
+            "セッションを作れる。上限 %d と自動回収で資源を守る",
+            max_sessions,
+        )
 
     config = Config(
         public_host=public_host,

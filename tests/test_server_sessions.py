@@ -86,21 +86,23 @@ def test_malformed_public_key_is_rejected() -> None:
     assert docker.commands == []
 
 
-def test_a_new_session_replaces_the_owners_old_one() -> None:
-    """Ctrl-C で抜けた残りに塞がれて、次が作れない、を避ける。"""
+def test_one_owner_can_hold_several_sessions_at_once() -> None:
+    """ターミナルを 3 つ開けば 3 セッション動く。互いを閉じない。
+
+    「同じ持ち主が新しく作ったら古いのを閉じる」にしていた時期がある。
+    Ctrl-C の残骸に塞がれないための工夫だったが、同時に複数動かす使い方を
+    壊すので外した。残骸は idle 回収に任せる。
+    """
     docker = FakeDocker()
     mgr = _manager(docker, prober=_alive)
 
     async def scenario():
-        first = await mgr.create("alice", "cube_stack", _client_key())
-        second = await mgr.create("alice", "cube_stack", _client_key())
-        return first, second
+        return [await mgr.create("alice", "cube_stack", _client_key()) for _ in range(3)]
 
-    first, second = run(scenario())
-    assert mgr.get(first.session_id) is None
-    assert mgr.get(second.session_id) is not None
-    assert len(mgr.list("alice")) == 1
-    assert docker.ran("docker rm -f", first.spec.container_name)
+    sessions = run(scenario())
+    assert len(mgr.list("alice")) == 3
+    assert len({s.spec.host_port for s in sessions}) == 3, "ポートが重なっている"
+    assert not docker.ran("docker rm -f"), "既存のセッションを閉じてしまった"
 
 
 def test_global_limit_returns_429() -> None:
