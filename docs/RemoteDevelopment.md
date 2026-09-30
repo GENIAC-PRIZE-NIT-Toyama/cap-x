@@ -201,11 +201,29 @@ GPU は `--runtime nvidia`（`--gpus` ではない）。
 ```
 --memory 4g  --cpus 2  --pids-limit 512
 --cap-drop ALL  --security-opt no-new-privileges
-/workspace は read-only、/tmp は tmpfs 1g
+--read-only  --tmpfs /tmp:rw,size=1g  --tmpfs /run:rw,size=16m
+--user 10001:10001  --ulimit nofile=4096:4096  --ulimit core=0
 ```
 
-加えて非 root user、`--read-only` rootfs、`--ulimit nofile` / `core=0`、seccomp、
-image の digest pin、stdout/stderr とコードサイズの上限。
+実装（`capx/remote_env/server/docker.py`、フラグは `tests/test_server_docker.py` で固定）:
+
+- **rootfs は読み取り専用。** 書けるのは tmpfs（`/tmp`、`/run`）だけ。API の一部が作業
+  ディレクトリに相対パスで書く（`depth_image.jpg`）ので、worker は環境を作り終えたあと
+  `/tmp` に `chdir` する。
+- **非 root。** Dockerfile の `USER 10001:10001` と `--user` を同じ値にしている。
+- **seccomp は docker の既定プロフィールに任せる。** 独自プロフィールは作らない。
+  `unconfined` にしていないことをテストで押さえている。
+- **image は digest で固定できる。** backend の環境変数 `CAPX_WORKER_IMAGE=capx-worker@sha256:...`。
+  未設定なら `capx-worker:latest`。
+- **stdout / stderr は 1 step あたり `Budget.max_output_bytes`（既定 64KB）まで。** 超えた分は
+  切り捨てる。コードは `max_code_bytes`（64KB）。
+- **oracle は image に入れない。** `.dockerignore` で `capx/baselines` と
+  `env_configs/human_oracle_code` を外し、Dockerfile がビルド中に task クラスの
+  `ORACLE_CODE` / `oracle_code`（文字列定数）を `None` に置き換える。置き換えは
+  `tests/test_server_docker.py` が同じスクリプトを取り出して検証している。
+
+コンテナの `docker build` はディスクを使う（worker image は約 12GB、ビルドキャッシュで
+さらに増える）。作り直すときは、先に古い image を消して空きを確保する。
 
 同時セッション数 × 4GB が GPU マシンの RAM を超えないよう、backend に上限セッション数を持たせる。
 
@@ -227,6 +245,26 @@ image の digest pin、stdout/stderr とコードサイズの上限。
 2 の境界は **プロセス分離**。生成コード実行プロセスと Gym 所有プロセスを分け、
 API を RPC スタブとして渡す。reward オブジェクトが生成コード側のプロセスに存在しない状態を作る。
 
+実装（`capx/remote_env/worker/`）:
+
+- **Gym プロセス**（worker 本体）がシミュレータ・API・reward を持つ。**policy プロセス**
+  （`policy_process.py`）が生成コードを `exec` する。policy 側は capx の環境を import せず、
+  API の関数名のスタブだけを持つ。スタブを呼ぶと Gym 側に RPC で頼み、結果を受け取る。
+- **RPC は msgpack。pickle は使わない。** policy 側は信用できないコードなので、そこから
+  届くバイト列を pickle で解くと Gym 側で任意コードが動く。tuple は印を付けて往復させる。
+- **globals はステップをまたいで持ち越す。** エピソード（`reset`）ごとに作り直す。
+- **時間切れは policy プロセスの kill で止める。** 同じプロセスで `exec` していたころは
+  `while True` を止める手段が無かった。kill 後の次のステップは新しいプロセスで動く
+  （変数は失われる）。
+- **worker の秘密（CURVE の鍵など）は policy プロセスに渡さない。** 環境変数は許可リスト。
+- `expose_env` は別プロセスでは使えない（`env` を渡せない）。指定されていれば警告して無視する。
+- 切り替えは worker の `--isolate-policy`（既定 True）。Local 実行は従来どおり同一プロセス。
+
+**限界:** policy プロセスは同じユーザーで、同じコンテナの中で動く。`--cap-drop ALL` で
+ptrace 等は使えないが、別ユーザーには分けていない。悪意ある参加者への完全な防御ではなく、
+Agent や LLM が近道として reward に触れてしまうのを防ぐ境界（この運用は非敵対的な
+ワークショップ）。
+
 3 の境界は **サーバ側採点**。`evaluate` は worker が計算した結果を読むだけで、
 クライアントは値を送らない。
 
@@ -247,6 +285,10 @@ oracle ソースも worker runtime image から除く。生成コードがパッ
 生成コードは `signal.alarm(0)` や `signal.signal(SIGALRM, SIG_IGN)` で worker 内の
 タイムアウトを無効化できるため、worker の soft deadline だけでは止められない。
 
+実装では、生成コードは別プロセス（上記）で動くので、`execution_time_s` を超えたらその
+プロセスを **worker が kill** する。worker 自体が止まったときの最後の手段が backend の
+寿命上限（`max_lifetime`、既定 2 時間）と、応答なしの回収。
+
 ### リトライ
 
 | 種類 | 扱い |
@@ -256,6 +298,10 @@ oracle ソースも worker runtime image から除く。生成コードがパッ
 
 タイムアウト後の env は再利用しない。**retry ごとに新規セッションを作る。**
 同一 `request_id` の重複は cached response を返し、結果が不明なら session を破棄する。
+
+実装: `remote/trial.py` が `EnvUnavailable` を受けたら、新しいセッションを作って同じ trial を
+やり直す（`MAX_INFRA_RETRIES = 3`）。回数は `result.json` の `infrastructure_retries`。
+満員（`CapacityFull`）も `EnvUnavailable` の一種で、同じ扱い。
 
 ## 6. 画像とメモリ
 
@@ -318,6 +364,18 @@ CPU も使わない。
   可逆でなければならない場面に限る。
 - **この値の適用範囲:** cube_stack の 1 タスクだけ。シーンが複雑なタスク（ナット組み立て
   など）や、LIBERO（800x512）ではサイズが変わる。タスクを足すときは測り直す。
+
+実装:
+
+- worker に `subscribe` / `unsubscribe`。購読者がいる間だけ、シミュレータがフレームを録る
+  たびに（実行スレッドから）通知が来て、最大 10 fps で JPEG にして**最新の 1 枚だけ**を
+  持つ。I/O スレッドがそれを購読者に `event`（operation `frame`）として push する。
+  詰まっている購読者には送らず（`NOBLOCK`）、次の最新を送る。購読者がいなければ
+  エンコードはしない（`tests/test_remote_stream.py`）。
+- クライアントは `RemoteAgentEnv.subscribe_frames(on_frame, save_dir=...)`。フレームは
+  `step()` を待っている間に届き、呼び出したスレッドで `on_frame(seq, jpeg)` が呼ばれる。
+  Agent の契約（`AgentEnv`）には出さない。
+- 録画は `record_video` が前提。フレームは間引きの対象になる録画バッファと同じ通知を使う。
 
 **ストリームを受けて表示するものは現時点で存在しない。** 手元 PC のローカル WebUI は今後作る。
 
@@ -455,6 +513,40 @@ steps_used     : 3
 参加者はこれを見て Agent を直し、また回す。このループは Bench から人間への一方向なので、
 生成コードに正解を渡すことなく成立する。
 
+### 成果物（`--output-dir`）
+
+試行ごとのフォルダ `trial_01_sandboxrc_0_reward_1.000_taskcompleted_1/` に、Local と同じ
+構成で書く。Remote でも同じ名前の場所に同じ種類のものが入る。
+
+| 場所 | 中身 |
+| --- | --- |
+| `result.json` | 固定スキーマの結果（`capx/bench/schema.py` の `TrialResult`、`schema_version`） |
+| `code.py`, `summary.txt` | 実行した全コード、ログ |
+| `steps/step_NN.py` / `.log` | 各ステップのコードと stdout / stderr / 実行時間 |
+| `all_responses.json`, `prompts_and_responses/` | LLM の入出力（`capx.llm.client.query_model` 経由の分） |
+| `artifacts/` | Agent が `AgentResult.artifacts` で渡したもの |
+| `videos/` | ターンごとの mp4 と `combined.mp4`（`record_video` のとき） |
+| `images/` | Agent が `render()` で取った画像 |
+
+- `result.json` は task_completed / reward / exec_ok / steps_used / 時計 2 本 / failure（種類と
+  文面）/ infrastructure_retries / budget / agent / config / git / llm（呼び出し数・トークン・
+  `source`）/ steps を持つ。Agent が違っても同じ形で並べられる。
+- LLM の入出力は、Bench が `contextvars` の記録器で集める。Agent が自前で SDK を呼んだ分は
+  見えないので、`AgentResult` の自己申告（`llm.source = self_reported`、参考値）になる。
+- Remote の動画は `step(capture_video=True)` の mp4 をクライアントが控えて書く。
+  `record_video` のときは Agent の指定に関わらず毎ステップ受け取る（worker のエンコードは
+  `execution_time_s` に含まない）。ターン動画は再エンコードせずにつなぐ。
+- `--output-dir` を付けたとき `record_video` は既定で有効。付けなければ何も書かない。
+
+### 動かないとき
+
+- `remote/doctor.py` … Python・依存・GPU マシンへの到達・認証・タスク一覧・セッションの
+  空き・LLM への到達とモデル名・Agent の読み込みを順に調べ、直し方まで出す。
+- 失敗は種類に分けて表示する（`capx/bench/errors.py`）: `agent_import` / `llm_auth` /
+  `llm_timeout` / `llm_unreachable` / `capacity_full` / `env_startup` / `budget` /
+  `infrastructure` / `agent_error`。生成コードのエラーは、失敗した行（`File "<string>"`
+  の行番号）を取り出して見せる。
+
 ## 9. 指標
 
 | 指標 | 定義 |
@@ -467,7 +559,12 @@ steps_used     : 3
 | `execution_time_s` / `trial_wall_clock_s` | 上記の時計 2 本 |
 | `infrastructure_retries` | インフラ障害によるリトライ回数 |
 
-`query_model` は現状 SDK の `usage` を捨てているので、返り値に追加する。
+`query_model` の返り値に `usage`（`prompt_tokens` / `completion_tokens`）を追加した。
+記録器がこれを合計し、`result.json` の `llm` に入れる。
+
+`exec_ok` は最後の step の `sandbox_rc == 0`。ただし、エピソードが終わったあとに実行して
+出る `executing action in terminated episode` は失敗として数えない（現行の挙動を引き継ぐ）。
+上書きしたときは `result.json` の `exec_ok_note` に理由を残す。
 ただしカスタム Agent が直接 SDK を呼べる以上、Bench は完全な token 数を観測できない。
 同梱 Agent の参考指標として位置づける。
 
@@ -689,6 +786,14 @@ uv run --no-sync --active tests/test_environments.py \
 `robosuite_env.reset()` に seed を渡すか、robosuite 側の RNG を直接
 シードする必要がある。Phase 5（指標の整備）で扱う。
 
-## 13. 未決
+## 13. 未決・未確認
 
-なし。実装中に判断が要るものは Phase 0A で確定させる。
+決めていないことは無い。実機で確かめていないものと、対象外のものを挙げる。
+
+- 間引きが実機で発動する長さ（900MB 超）の試行。ロジックは手元のテストで確認済み。
+- ストリーミングを実 worker で購読すること、`doctor.py` の実機実行。
+- 録画バッファの間引きは robosuite 基底のみ。handover / two_arm_lift / LIBERO は自前実装のまま。
+- 各フレームへの `sim_step` の記録と、間引き時の事前確保（一時的なメモリ増を避ける工夫）は未実装。
+- seed が robosuite の初期配置まで届かない件（§12）。
+- ネットワーク隔離の `0.0.0.0` 公開構成での実測（Phase 0A-4）。
+- Phase 6（LIBERO）、Phase 7（BEHAVIOR）。

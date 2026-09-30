@@ -91,7 +91,7 @@ def main(
 
 
 #: GPU マシン側の障害（接続断など）で trial をやり直す回数。
-MAX_INFRA_RETRIES = 2
+MAX_INFRA_RETRIES = 3
 
 
 def _run_with_retries(holder, runner, trial, config, seed, meta, reconnect):
