@@ -168,3 +168,110 @@ def _save_turn_and_combined_videos(
             _write_video(wrist_frames, base_dir, suffix="combined_wrist")
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# Remote / 共通: 試行フォルダに、見返すための成果物を書く
+# ---------------------------------------------------------------------------
+
+
+def save_trial_extras(
+    trial_dir: str,
+    *,
+    steps: list,
+    llm_entries: list[dict],
+    agent_artifacts: dict,
+    images: list[bytes],
+    result: dict,
+) -> None:
+    """試行フォルダに次を書く。Local と同じ名前の場所に、Remote でも同じ物が入る。
+
+    - ``result.json`` … 固定スキーマの結果（`capx.bench.schema.TrialResult`）
+    - ``steps/`` … 全ステップのコードと stdout / stderr
+    - ``prompts_and_responses/`` … LLM の入出力（同梱クライアント経由の分）
+    - ``artifacts/`` … Agent が `AgentResult.artifacts` で渡したもの
+    - ``videos/`` … ターンごとの動画と、つないだ動画
+    - ``images/`` … Agent が `render()` で取った画像
+    """
+    import json
+    from pathlib import Path
+
+    root = Path(trial_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "result.json").write_text(
+        json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    steps_dir = root / "steps"
+    steps_dir.mkdir(exist_ok=True)
+    for i, step in enumerate(steps, 1):
+        (steps_dir / f"step_{i:02d}.py").write_text(step.code, encoding="utf-8")
+        log = f"ok: {step.ok}\nexecution_time_s: {step.execution_time_s:.3f}\n"
+        log += f"--- stdout ---\n{step.stdout}\n--- stderr ---\n{step.stderr}\n"
+        (steps_dir / f"step_{i:02d}.log").write_text(log, encoding="utf-8")
+
+    prompts_dir = root / "prompts_and_responses"
+    prompts_dir.mkdir(exist_ok=True)
+    for entry in llm_entries:
+        n = entry["index"]
+        name = "initial_prompt" if n == 0 else f"multi_turn_prompt_{n - 1:02d}"
+        (prompts_dir / f"{name}.txt").write_text(
+            json.dumps(entry["prompt"], indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        (prompts_dir / f"response_{n:02d}.txt").write_text(
+            str(entry.get("content") or ""), encoding="utf-8"
+        )
+
+    if agent_artifacts:
+        art_dir = root / "artifacts"
+        art_dir.mkdir(exist_ok=True)
+        for name, value in agent_artifacts.items():
+            safe = Path(str(name)).name or "artifact"
+            data = value if isinstance(value, bytes) else str(value).encode("utf-8")
+            (art_dir / safe).write_bytes(data)
+
+    videos = [(i, s.video) for i, s in enumerate(steps, 1) if getattr(s, "video", None)]
+    if videos:
+        video_dir = root / "videos"
+        video_dir.mkdir(exist_ok=True)
+        paths = []
+        for i, data in videos:
+            path = video_dir / f"turn_{i:02d}.mp4"
+            path.write_bytes(data)
+            paths.append(path)
+        _concat_videos(paths, video_dir / "combined.mp4")
+
+    if images:
+        image_dir = root / "images"
+        image_dir.mkdir(exist_ok=True)
+        for i, data in enumerate(images, 1):
+            (image_dir / f"render_{i:03d}.jpg").write_bytes(data)
+
+
+def _concat_videos(paths: list, out) -> None:
+    """ターン動画を 1 本につなぐ。同じ設定でエンコードされているので再エンコードしない。
+
+    つなげなくてもターンごとの動画は残るので、失敗しても試行は止めない。
+    """
+    if len(paths) < 2:
+        return
+    import subprocess
+    import tempfile
+
+    try:
+        import imageio_ffmpeg
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        listing = f"{tmp}/list.txt"
+        with open(listing, "w", encoding="utf-8") as f:
+            for p in paths:
+                f.write(f"file '{p.resolve()}'\n")
+        subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+             "-i", listing, "-c", "copy", str(out)],
+            check=False,
+        )

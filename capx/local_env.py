@@ -47,6 +47,8 @@ class RecordedStep:
     task_completed: bool | None = None
     terminated: bool = False
     truncated: bool = False
+    #: このステップのターン動画（mp4）。Remote で `record_video` のときだけ入る。
+    video: bytes | None = None
 
 
 @dataclass

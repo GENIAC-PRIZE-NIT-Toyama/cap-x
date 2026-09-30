@@ -34,7 +34,9 @@ def make_agent_env(
 
         if not task_id:
             raise ValueError("remote には task_id が要る（env_config は送らない）")
-        return RemoteAgentEnv(server_url=server_url, task_id=task_id, budget=budget)
+        return RemoteAgentEnv(
+            server_url=server_url, task_id=task_id, budget=budget, record_video=record_video
+        )
 
     from capx.envs.configs.instantiate import instantiate
     from capx.local_env import LocalAgentEnv

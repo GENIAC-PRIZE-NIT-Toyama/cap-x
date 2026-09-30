@@ -17,11 +17,15 @@ from __future__ import annotations
 
 import gc
 import time
+from dataclasses import asdict
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from capx.agent_api import Agent, AgentResult, Budget, BudgetExceeded, EnvUnavailable
-from capx.bench.artifacts import _build_log_lines
+from capx.bench.artifacts import _build_log_lines, save_trial_extras
 from capx.bench.errors import explain
+from capx.bench.schema import LlmUsage, StepRecord, TrialResult, exec_ok, git_info
+from capx.llm.recorder import recording
 from capx.utils.launch_utils import TrialSummary, _save_trial_artifacts
 
 if TYPE_CHECKING:
@@ -37,6 +41,8 @@ def run_trial(
     *,
     seed: int | None = None,
     allow_reference_code: bool = False,
+    meta: dict[str, Any] | None = None,
+    infrastructure_retries: int = 0,
 ) -> TrialSummary:
     """1 trial を回して `TrialSummary` を返す。
 
@@ -51,6 +57,8 @@ def run_trial(
             届かず初期配置は固定されない（docs/RemoteDevelopment.md 参照）。
         allow_reference_code: True なら `TaskSpec.reference_code` に oracle を
             入れる。`OracleAgent` を回すときだけ。
+        meta: 結果に添える情報（`agent_spec` / `model` など）。
+        infrastructure_retries: この trial のために環境を作り直した回数。
     """
     started = time.time()
     budget = budget or Budget()
@@ -62,18 +70,23 @@ def run_trial(
             task = _with_reference_code(task, oracle)
 
     failure: str | None = None
-    try:
-        result = agent.run(env, task, budget)
-    except BudgetExceeded as exc:
-        # Agent の責任。リトライせず、その時点の状態で採点する。
-        failure = str(explain(exc))
-        result = AgentResult()
-    except EnvUnavailable:
-        # 環境側の障害。Bench の呼び出し元が新しいセッションで作り直す。
-        raise
-    except Exception as exc:  # Agent のバグ。trial は失敗として記録する。
-        failure = str(explain(exc))
-        result = AgentResult()
+    failure_info: dict[str, str] | None = None
+    # 同梱の LLM クライアント経由の入出力・トークンを控える
+    with recording() as llm:
+        try:
+            result = agent.run(env, task, budget)
+        except BudgetExceeded as exc:
+            # Agent の責任。リトライせず、その時点の状態で採点する。
+            explained = explain(exc)
+            failure, failure_info = str(explained), _info(explained)
+            result = AgentResult()
+        except EnvUnavailable:
+            # 環境側の障害。Bench の呼び出し元が新しいセッションで作り直す。
+            raise
+        except Exception as exc:  # Agent のバグ。trial は失敗として記録する。
+            explained = explain(exc)
+            failure, failure_info = str(explained), _info(explained)
+            result = AgentResult()
 
     outcome = env.evaluate()
     steps = env.recorded_steps
@@ -108,6 +121,14 @@ def run_trial(
         stderr_override=stderr,
     )
 
+    ok, ok_note = exec_ok(outcome.sandbox_rc, stderr)
+    trial_result = _build_result(
+        env, task, trial, seed, outcome, steps, ok, ok_note, failure_info, budget,
+        infrastructure_retries,
+        {"agent_class": f"{type(agent).__module__}.{type(agent).__qualname__}", **(meta or {})},
+        config, llm, result, time.time() - started,
+    )
+
     code_path = None
     if config.get("output_dir"):
         code_path = _save_trial_artifacts(
@@ -118,9 +139,17 @@ def run_trial(
             bool(outcome.task_completed),
             final_code,
             None,
-            [],
+            llm.entries,
             log_lines,
             [],
+        )
+        save_trial_extras(
+            str(Path(code_path).parent),
+            steps=steps,
+            llm_entries=llm.entries,
+            agent_artifacts=result.artifacts or {},
+            images=list(getattr(env, "rendered_images", [])),
+            result=trial_result.to_dict(),
         )
 
     _save_videos(env, config, trial, info_step, outcome, steps)
@@ -129,8 +158,9 @@ def run_trial(
     gc.collect()
 
     return TrialSummary(
+        result=trial_result,
         trial=trial,
-        success=outcome.sandbox_rc == 0,
+        success=ok,
         reward=outcome.reward,
         terminated=outcome.terminated,
         truncated=outcome.truncated,
@@ -141,6 +171,54 @@ def run_trial(
         num_regenerations=num_regenerations,
         num_finishes=num_finishes,
         num_code_blocks=len(steps),
+    )
+
+
+def _info(explained) -> dict[str, str]:
+    return {"kind": explained.kind, "message": explained.message}
+
+
+def _build_result(
+    env, task, trial, seed, outcome, steps, ok, ok_note, failure_info, budget,
+    retries, meta, config, llm, agent_result, wall_clock_s,
+) -> TrialResult:
+    totals = llm.totals()
+    if totals["calls"]:
+        usage = LlmUsage(totals["calls"], totals["tokens_in"], totals["tokens_out"], "bundled")
+    elif agent_result.llm_calls is not None or agent_result.tokens_in is not None:
+        usage = LlmUsage(
+            agent_result.llm_calls, agent_result.tokens_in, agent_result.tokens_out, "self_reported"
+        )
+    else:
+        usage = LlmUsage()
+    return TrialResult(
+        trial=trial,
+        seed=seed if seed is not None else trial,
+        task_id=task.task_id,
+        task_completed=outcome.task_completed,
+        reward=outcome.reward,
+        terminated=outcome.terminated,
+        truncated=outcome.truncated,
+        exec_ok=ok,
+        exec_ok_note=ok_note,
+        steps_used=len(steps),
+        execution_time_used_s=round(sum(s.execution_time_s for s in steps), 3),
+        wall_clock_s=round(wall_clock_s, 3),
+        failure=failure_info,
+        infrastructure_retries=retries,
+        budget=asdict(budget),
+        agent={
+            "spec": meta.get("agent_spec"),
+            "class": meta.get("agent_class"),
+            "model": meta.get("model"),
+        },
+        config={
+            "record_video": bool(config.get("record_video")),
+            "output_dir": config.get("output_dir"),
+        },
+        git=git_info(),
+        llm=usage,
+        steps=[StepRecord(i, s.ok, round(s.execution_time_s, 3)) for i, s in enumerate(steps, 1)],
     )
 
 
@@ -159,6 +237,8 @@ def _save_videos(env, config, trial, info_step, outcome, steps) -> None:
     """
     if not config.get("record_video") or not steps:
         return
+    if not hasattr(env, "inner"):
+        return  # Remote は手元で受け取った動画を `save_trial_extras` が書く
 
     from capx.bench.artifacts import _save_trial_video, _save_turn_and_combined_videos
 

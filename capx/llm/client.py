@@ -211,7 +211,9 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> dict
         args: Configuration with connection (server_url/api_key/wire) and model settings
         prompt: Full prompt containing environment observation and possibly multi-turn decision prompt
     Returns:
-        Dict with "content" and "reasoning" keys.
+        Dict with "content", "reasoning" and "usage" keys. ``usage`` is
+        ``{"prompt_tokens", "completion_tokens"}`` or ``None`` if the server
+        did not report it.
     """
     base_url, api_key, wire = _resolve_connection(args)
     client = _get_client(base_url, api_key)
@@ -253,7 +255,30 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> dict
             out["reasoning"] = None
     except (AttributeError, IndexError, StopIteration) as exc:
         raise RuntimeError(f"Unexpected response format: {response!r}") from exc
+    out["usage"] = _extract_usage(response)
+
+    from capx.llm.recorder import current
+
+    recorder = current()
+    if recorder is not None:
+        recorder.add(prompt, out, out["usage"], end_time - start_time)
     return out
+
+
+def _extract_usage(response: Any) -> dict[str, int] | None:
+    """chat は prompt/completion_tokens、responses は input/output_tokens。"""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    tokens_in = getattr(usage, "prompt_tokens", None)
+    if tokens_in is None:
+        tokens_in = getattr(usage, "input_tokens", None)
+    tokens_out = getattr(usage, "completion_tokens", None)
+    if tokens_out is None:
+        tokens_out = getattr(usage, "output_tokens", None)
+    if tokens_in is None and tokens_out is None:
+        return None
+    return {"prompt_tokens": int(tokens_in or 0), "completion_tokens": int(tokens_out or 0)}
 
 
 def query_model_streaming(

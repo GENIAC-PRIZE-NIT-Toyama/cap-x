@@ -55,6 +55,8 @@ class TrialSummary:
     num_regenerations: int = 0
     num_finishes: int = 0
     num_code_blocks: int = 0
+    #: `capx.bench.schema.TrialResult`（Bench 経由のときだけ入る）
+    result: Any = None
 
 
 def run_server_proc(api_cfg) -> multiprocessing.Process:
@@ -524,9 +526,9 @@ def _print_and_save_summary(
     print(f"Config Path: {args.config_path}")
     print(f"Git Commit: {git_commit} (Dirty: {is_dirty})")
     print(f"Total number of trials: {executed_trials}")
-    print(
-        f"Code generation success rate / Average reward / Task completed: \n{success_rate:.3f}/{average_reward:.3f}/{task_completed_count}"
-    )
+    print(f"task_completion_rate: {task_completed_count / executed_trials:.3f} ({task_completed_count}/{executed_trials})")
+    print(f"Average reward: {average_reward:.3f}")
+    print(f"exec_ok_rate (last step ran without error, not task success): {success_rate:.3f}")
     print(f"Average code blocks: {average_code_blocks:.3f}")
     print(f"Average regenerations: {average_regenerations:.3f}")
     print(f"Average finishes: {average_finishes:.3f}")
@@ -542,9 +544,9 @@ def _print_and_save_summary(
             f.write(f"Config Path: {args.config_path}\n")
             f.write(f"Git Commit: {git_commit} (Dirty: {is_dirty})\n")
             f.write(f"Total number of trials: {executed_trials}\n")
-            f.write(
-                f"Code generation success rate / Average reward / Task completed: \n{success_rate:.3f}/{average_reward:.3f}/{task_completed_count}\n"
-            )
+            f.write(f"task_completion_rate: {task_completed_count / executed_trials:.3f} ({task_completed_count}/{executed_trials})\n")
+            f.write(f"Average reward: {average_reward:.3f}\n")
+            f.write(f"exec_ok_rate (last step ran without error, not task success): {success_rate:.3f}\n")
             f.write(f"Average code blocks: {average_code_blocks:.3f}\n")
             f.write(f"Average regenerations: {average_regenerations:.3f}\n")
             f.write(f"Average finishes: {average_finishes:.3f}\n")

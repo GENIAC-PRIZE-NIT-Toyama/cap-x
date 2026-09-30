@@ -46,6 +46,7 @@ class RemoteAgentEnv:
         task_id: str | None = None,
         budget: Budget | None = None,
         session_id: str = "",
+        record_video: bool = False,
         timeout_s: float = DEFAULT_TIMEOUT_S,
         curve_server_key: bytes | None = None,
         curve_keypair: tuple[bytes, bytes] | None = None,
@@ -57,6 +58,8 @@ class RemoteAgentEnv:
             task_id: backend に渡すタスク名。`env_config` は送らない
                 （任意の `_target_` を受けると任意 import の入口になる）。
             budget: 予算。強制するのは worker 側。
+            record_video: True なら Agent の指定に関わらず、毎ステップのターン動画
+                （mp4）を受け取って控える。Agent に見える `StepResult.video` も入る。
             curve_server_key: worker の公開鍵。渡すと CURVE で繋ぐ。
             curve_keypair: 自分の (公開鍵, 秘密鍵)。秘密鍵はこの PC から出ない。
         """
@@ -70,6 +73,8 @@ class RemoteAgentEnv:
         self._curve_keypair = curve_keypair
         self._task: TaskSpec | None = None
         self._steps: list = []
+        self._record_video = record_video
+        self._images: list[bytes] = []
         self._frame_handler: Callable[[int, bytes], None] | None = None
 
         if server_url:
@@ -96,7 +101,9 @@ class RemoteAgentEnv:
         if len(code.encode("utf-8")) > self._budget.max_code_bytes:
             raise BudgetExceeded("output_limit", "コードが上限を超えた")
 
-        payload = self._call("step", code=code, capture_video=capture_video)
+        payload = self._call(
+            "step", code=code, capture_video=capture_video or self._record_video
+        )
         result = StepResult(**payload["result"])
 
         # Bench は Agent の自己申告ではなく、`step()` を通ったものを記録する。
@@ -111,14 +118,22 @@ class RemoteAgentEnv:
                 stderr=result.stderr,
                 execution_time_s=result.execution_time_used_s,
                 truncated=result.truncated,
+                video=result.video if self._record_video else None,
             )
         )
         return result
 
     def render(self, camera: str = "main") -> bytes:
         payload = self._call("render", camera=camera)
-        image = payload.get("image") or b""
-        return bytes(image)
+        image = bytes(payload.get("image") or b"")
+        if self._record_video:
+            self._images.append(image)
+        return image
+
+    @property
+    def rendered_images(self) -> list[bytes]:
+        """Agent が `render()` で取った画像（JPEG）。`record_video` のときだけ控える。"""
+        return list(self._images)
 
     # -- ストリーミング ----------------------------------------------------
 
@@ -192,6 +207,7 @@ class RemoteAgentEnv:
     def reset_for_trial(self, trial: int, seed: int | None = None) -> TaskSpec:
         payload = self._call("reset", trial=trial, seed=seed)
         self._steps.clear()
+        self._images.clear()
         self._task = TaskSpec(**payload["task"])
         return self._task
 
