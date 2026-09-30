@@ -195,6 +195,8 @@ class RemoteAgentEnv:
         self._socket = context.socket(zmq.DEALER)
         self._socket.setsockopt(zmq.LINGER, 0)
         self._socket.setsockopt(zmq.MAXMSGSIZE, protocol.MAX_MESSAGE_BYTES)
+        self._socket.setsockopt(zmq.HEARTBEAT_IVL, protocol.HEARTBEAT_IVL_MS)
+        self._socket.setsockopt(zmq.HEARTBEAT_TIMEOUT, protocol.HEARTBEAT_TIMEOUT_MS)
         if self._curve_server_key is not None:
             if self._curve_keypair is None:
                 raise ValueError("curve_server_key には curve_keypair も要る")

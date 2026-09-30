@@ -19,6 +19,7 @@ import os
 import queue
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +30,9 @@ logger = logging.getLogger("capx.worker")
 
 #: 実行スレッドの結果を待つ間、I/O ループが回る間隔。
 POLL_MS = 100
+
+#: 再送に備えて覚えておく応答の数。
+DONE_CACHE_SIZE = 16
 
 
 @dataclass
@@ -50,7 +54,8 @@ class WorkerServer:
         self._last_activity = time.monotonic()
         self._jobs: queue.Queue[_Job] = queue.Queue()
         self._results: queue.Queue[tuple[bytes, Any]] = queue.Queue()
-        self._done: dict[str, Any] = {}  # request_id -> 応答（再送対策）
+        # request_id -> 応答（再送対策）。動画つきの応答は大きいので、古いものから捨てる。
+        self._done: OrderedDict[str, Any] = OrderedDict()
         self._busy = False
         self._stop = threading.Event()
 
@@ -75,6 +80,8 @@ class WorkerServer:
                 reply = protocol.error(msg, repr(exc), kind=_failure_kind(exc))
 
             self._done[msg.request_id] = reply
+            while len(self._done) > DONE_CACHE_SIZE:
+                self._done.popitem(last=False)
             self._results.put((job.identity, reply))
             self._busy = False
 
@@ -158,6 +165,9 @@ class WorkerServer:
         socket.setsockopt(zmq.MAXMSGSIZE, protocol.MAX_MESSAGE_BYTES)
         socket.setsockopt(zmq.SNDHWM, 16)
         socket.setsockopt(zmq.RCVHWM, 16)
+        # TCP が黙って切れた相手（PC のスリープ・経路の断）を ZMQ 自身が検出する。
+        socket.setsockopt(zmq.HEARTBEAT_IVL, protocol.HEARTBEAT_IVL_MS)
+        socket.setsockopt(zmq.HEARTBEAT_TIMEOUT, protocol.HEARTBEAT_TIMEOUT_MS)
         socket.bind(f"tcp://{host}:{port}")
         logger.info("listening on tcp://%s:%d", host, port)
 

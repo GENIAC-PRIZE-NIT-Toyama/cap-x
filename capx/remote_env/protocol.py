@@ -20,6 +20,11 @@ PROTOCOL_VERSION = 1
 #: 1 メッセージの上限。動画を積んでも収まり、壊れた長さで巨大確保しない値。
 MAX_MESSAGE_BYTES = 256 * 1024 * 1024
 
+#: ZMQ 層の heartbeat（アプリ層の `ping` とは別）。送信間隔と、応答が無いと
+#: 切断とみなすまでの時間。step の最中も I/O スレッドが回っているので誤検出しない。
+HEARTBEAT_IVL_MS = 5_000
+HEARTBEAT_TIMEOUT_MS = 30_000
+
 
 class ProtocolError(RuntimeError):
     """受け取ったメッセージが契約に合わない。"""
