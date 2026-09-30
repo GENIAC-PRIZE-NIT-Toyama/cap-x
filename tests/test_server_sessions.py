@@ -253,3 +253,28 @@ def test_reconcile_removes_leftovers_from_a_previous_run() -> None:
     assert docker.ran("docker rm -f c1")
     assert docker.ran("docker network rm n1")
     assert any(dk.LABEL_MANAGED in " ".join(c) for c in docker.ran("docker ps"))
+
+
+def test_sessions_take_gpus_in_turn_by_uuid() -> None:
+    """セッションごとに UUID を順に割り当て、`NVIDIA_VISIBLE_DEVICES` に渡す。
+
+    番号ではなく UUID にするのは、`nvidia-smi` と CUDA で番号がずれるマシンが
+    あるため。あの環境では `CUDA_VISIBLE_DEVICES=1` が別のカードを掴んだ。
+    """
+    docker = FakeDocker()
+    mgr = _manager(docker, prober=_alive, gpu_devices=["GPU-aaa", "GPU-bbb"])
+
+    async def scenario():
+        a = await mgr.create("a", "cube_stack", _client_key())
+        b = await mgr.create("b", "cube_stack", _client_key())
+        c = await mgr.create("c", "cube_stack", _client_key())
+        return a, b, c
+
+    a, b, c = run(scenario())
+    assert (a.spec.gpu_device, b.spec.gpu_device, c.spec.gpu_device) == (
+        "GPU-aaa", "GPU-bbb", "GPU-aaa",
+    )
+    assert any(
+        "NVIDIA_VISIBLE_DEVICES=GPU-bbb" in cmd
+        for cmd in docker.ran("docker run", b.spec.container_name)[0]
+    )

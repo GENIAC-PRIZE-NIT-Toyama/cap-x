@@ -30,7 +30,7 @@ def main(
     max_sessions: int = 20,
     idle_ttl_min: float = 20.0,
     max_lifetime_min: float = 120.0,
-    gpu_uuids: str = "",
+    gpu_uuids: str = os.environ.get("CAPX_GPU_UUIDS", ""),
     no_auth: bool = False,
 ) -> None:
     """
@@ -38,7 +38,9 @@ def main(
         public_host: 手元PC から届く、この GPU マシンの名前か IP。
         max_sessions: 同時セッション数。× 4GB がこのマシンの RAM に収まること。
         gpu_uuids: `nvidia-smi -L` の UUID をカンマ区切りで。セッションに順に割り当てる。
-            省略すると全 GPU が見える（GPU が 1 枚のマシン向け）。
+            省略すると環境変数 CAPX_GPU_UUIDS、それも無ければ全 GPU が見える。
+            番号ではなく UUID を使うのは、`nvidia-smi` と CUDA で番号の付け方が
+            ずれるマシンがあり、番号だと別のカードを掴むため。
         no_auth: 認証を無効にする。開発用。ポートを開けた状態では使わない。
     """
     import uvicorn
