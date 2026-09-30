@@ -16,13 +16,14 @@ import viser.transforms as vtf
 from robosuite.utils.camera_utils import get_real_depth_map
 
 from capx.envs.base import BaseEnv
+from capx.utils.frame_buffer import FrameBufferMixin
 from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import depth_color_to_pointcloud
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
 
-class RobosuiteBaseEnv(BaseEnv):
+class RobosuiteBaseEnv(FrameBufferMixin, BaseEnv):
     """Base class for single-arm Robosuite Franka environments.
 
     Subclasses must implement:
@@ -64,11 +65,9 @@ class RobosuiteBaseEnv(BaseEnv):
 
         # Video capture
         self._record_frames = False
-        self._frame_buffer: list[np.ndarray] = []
-        self._wrist_frame_buffer: list[np.ndarray] = []
         self._record_wrist_camera = False
         self._wrist_camera_name = "robot0_eye_in_hand"
-        self._subsample_rate = self._SUBSAMPLE_RATE
+        self._init_frame_buffer()
 
         # Control state
         self._current_joints = np.zeros(7, dtype=np.float64)
@@ -325,31 +324,9 @@ class RobosuiteBaseEnv(BaseEnv):
         self._record_frames = enabled
         self._record_wrist_camera = wrist_camera
         if clear:
-            self._frame_buffer.clear()
-            self._wrist_frame_buffer.clear()
+            self._reset_frame_recording()
         if enabled:
             self._record_frame()
-
-    def get_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
-        frames = [frame.copy() for frame in self._frame_buffer]
-        if clear:
-            self._frame_buffer.clear()
-        return frames
-
-    def get_video_frame_count(self) -> int:
-        return len(self._frame_buffer)
-
-    def get_video_frames_range(self, start: int, end: int) -> list[np.ndarray]:
-        return [frame.copy() for frame in self._frame_buffer[start:end]]
-
-    def get_wrist_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
-        frames = [frame.copy() for frame in self._wrist_frame_buffer]
-        if clear:
-            self._wrist_frame_buffer.clear()
-        return frames
-
-    def get_wrist_video_frames_range(self, start: int, end: int) -> list[np.ndarray]:
-        return [frame.copy() for frame in self._wrist_frame_buffer[start:end]]
 
     def _record_frame(self) -> None:
         if not self._record_frames:
@@ -361,16 +338,17 @@ class RobosuiteBaseEnv(BaseEnv):
             height=self._render_height,
             depth=False,
         )
-        self._frame_buffer.append(frame[::-1])  # Flip vertically
-
+        wrist = None
         if self._record_wrist_camera:
-            wrist_frame = self.robosuite_env.sim.render(
+            wrist = self.robosuite_env.sim.render(
                 camera_name=self._wrist_camera_name,
                 width=self._render_width,
                 height=self._render_height,
                 depth=False,
-            )
-            self._wrist_frame_buffer.append(wrist_frame[::-1])
+            )[::-1]
+        self._append_frame(frame[::-1], wrist)  # Flip vertically
+
+        self._thin_frames()
 
     def render(self, mode: str = "rgb_array") -> np.ndarray:  # type: ignore[override]
         if mode != "rgb_array":

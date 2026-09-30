@@ -168,12 +168,6 @@ uv run --no-sync --active capx/envs/launch.py \
     --config-path env_configs/r1pro/r1pro_pick_up_radio.yaml \
     --model "google/gemini-3.1-pro-preview"
 
-# Interactive Web UI
-uv run --no-sync --active capx/envs/launch.py \
-    --config-path env_configs/cube_stack/franka_robosuite_cube_stack.yaml \
-    --web-ui True
-# Open http://localhost:8200
-
 # Regression tests
 ./scripts/regression_test.sh quick    # 10-trial smoke test (~30s)
 ./scripts/regression_test.sh test1    # Full single-turn (~3 min)

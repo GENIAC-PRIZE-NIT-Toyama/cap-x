@@ -1,0 +1,51 @@
+# 手元PC（Windows / Linux / macOS）で動かす participant 用プロジェクト。
+#
+# 意図的にルートの pyproject.toml から独立させている。ルート側は
+# nvidia-curobo / sam3 / pyroki / verl などを editable path・git 依存として
+# 持っており、uv がメタデータ生成のためにそれらの setup.py を実行する。
+# nvidia-curobo の setup.py は CUDA_HOME を要求するので、CUDA の無い手元PCでは
+# `uv lock` 自体が失敗する。参加者に submodule 取得や CUDA を要求しないため、
+# ここは simulator にも CUDA にも触れない依存だけで閉じる。
+#
+# 参加者の手順:
+#     cd remote && uv sync
+#
+# [tool.uv] environments は意図的に書かない（未指定 = 全プラットフォーム向けに
+# 解決する）。手元PC は Windows / Linux / macOS のいずれもあり得る。
+
+[project]
+name = "capx-remote"
+version = "0.1.0"
+description = "CaP-X remote workspace: write an Agent on your laptop, run the simulator on the GPU machine."
+readme = "README.md"
+requires-python = ">=3.10, <3.14"
+license = { text = "MIT" }
+
+dependencies = [
+  # LLM
+  "openai>=1.40",
+  # ZMQ データ面・コントロール面・画像・CLI は capx の base 依存から入る
+  # （pyzmq / msgpack / requests / numpy / pillow / tyro / rich / pydantic）。
+  # ここに重ねて書くと、どちらが正か分からなくなる。
+  # 契約の型（capx.agent_api）、RemoteAgentEnv、Bench。
+  # ルートの pyproject を読むが、base が軽く path source が extra で絞られて
+  # いるので、submodule も CUDA も要求しない。
+  # 検証: submodule 未取得の clone で `uv sync` が 66 パッケージで通ること。
+  "capx",
+]
+
+[tool.uv.sources]
+capx = { path = "..", editable = true }
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []

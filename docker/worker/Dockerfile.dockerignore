@@ -1,0 +1,40 @@
+# docker/worker/Dockerfile のビルドコンテキスト。
+# `robosuite` extra が要るものだけを入れる。
+
+.git
+.github
+.z
+.venv
+.k
+outputs
+remote
+docker
+tests
+scripts
+docs
+node_modules
+
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+# `robosuite` extra が要らない vendor。
+# capx/third_party/robosuite と capx/third_party/sam3 は要る:
+# 前者は extra そのもの、後者は `env` extra の依存で、`robosuite` extra が
+# capx[env] を含むので lock の解決に入る。
+capx/third_party/b1k
+capx/third_party/contact_graspnet_pytorch
+capx/third_party/LIBERO-PRO
+capx/third_party/libero_dependencies
+capx/third_party/curobo
+capx/third_party/verl
+
+# oracle（正解コード）を runtime image に入れない。worker は capx.baselines を
+# import しない。タスクのクラスに埋まっている ORACLE_CODE は、Dockerfile の
+# ビルド中に取り除く。
+capx/baselines
+env_configs/human_oracle_code

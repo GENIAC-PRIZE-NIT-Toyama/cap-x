@@ -16,3 +16,13 @@ export OWLVIT_SERVICE_URL=http://127.0.0.1:8117
 # server as a local subprocess (only works when its *_SERVICE_URL resolves
 # to a local host):
 # export CAPX_AUTO_LAUNCH_SERVERS=1
+
+# --- リモート実行の backend（capx.remote_env.server）---------------------
+# 参加者のセッションに割り当てる GPU。`nvidia-smi -L` の UUID をカンマ区切りで。
+# 新しいセッションごとに順に割り当てる。空きの少ないカードは入れない。
+# export CAPX_GPU_UUIDS="GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# 認証は既定で無し（すでに LAN に出ている知覚 API のサーバと同じ扱い）。
+# 不特定多数が繋がる場所で使うときだけ、`名前:トークン` をカンマ区切りで設定する。
+# 設定すると、参加者の remote/.env にも CAPX_ENV_SERVER_TOKEN=<トークン> が要る。
+# export CAPX_ENV_SERVER_TOKENS="alice:change-me,bob:change-me-too"
