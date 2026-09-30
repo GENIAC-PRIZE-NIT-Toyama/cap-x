@@ -174,3 +174,37 @@ def test_without_tokens_people_still_cannot_end_each_others_sessions(open_client
     assert guessed.status_code == 404
     assert open_client.get("/sessions").json()["active"] == 1
     assert created["session_id"] not in str(open_client.get("/sessions").json())
+
+
+def _create_via(base_url: str, public_host: str | None, headers: dict | None = None):
+    manager = SessionManager(
+        Config(public_host=public_host, port_start=19500, port_end=19510),
+        runner=FakeDocker(),
+    )
+    with TestClient(create_app(manager, None, reap=False), base_url=base_url) as c:
+        return c.post(
+            "/sessions",
+            json={"task_id": "cube_stack", "client_public_key": _key()},
+            headers=headers,
+        )
+
+
+def test_endpoint_host_follows_the_address_the_client_used() -> None:
+    """--public-host 無しなら、クライアントが HTTP で使った宛先がそのまま返る。"""
+    r = _create_via("http://10.1.2.3:8200", None)
+    assert r.status_code == 200, r.text
+    assert r.json()["zmq_endpoint"].startswith("tcp://10.1.2.3:195")
+
+    r = _create_via("http://gpu-box.lan:8200", None)
+    assert r.json()["zmq_endpoint"].startswith("tcp://gpu-box.lan:195")
+
+
+def test_explicit_public_host_wins_over_the_host_header() -> None:
+    r = _create_via("http://10.1.2.3:8200", "gpu.example")
+    assert r.json()["zmq_endpoint"].startswith("tcp://gpu.example:195")
+
+
+def test_unusable_host_header_is_rejected_with_a_hint() -> None:
+    r = _create_via("http://10.1.2.3:8200", None, headers={"Host": "bad host/x"})
+    assert r.status_code == 400
+    assert "--public-host" in r.json()["detail"]

@@ -76,8 +76,9 @@ class PortAllocator:
 
 @dataclass
 class Config:
-    public_host: str
-    """クライアントに返す ZMQ の宛先ホスト。手元PC から届く名前か IP。"""
+    public_host: str | None = None
+    """クライアントに返す ZMQ の宛先ホスト。省略すると、クライアントが HTTP で
+    この backend に繋いだときの宛先（`Host` ヘッダ）をそのまま使う。"""
 
     port_start: int = 19500
     port_end: int = 19600

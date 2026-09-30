@@ -1,14 +1,14 @@
 """backend を起動する。
 
-    uv run --no-sync --active -m capx.remote_env.server --public-host 192.168.0.50
+    uv run --no-sync --active -m capx.remote_env.server
 
 既定では認証なし。すでに LAN に出ている知覚 API のサーバ（SAM3 など）も認証なしで、
 それと同じ扱いにしている。ネットワークの外に出す・不特定多数が繋がる場所で使う
 ときだけ、環境変数 CAPX_ENV_SERVER_TOKENS（`名前:トークン` をカンマ区切り）を
 設定すると認証が有効になる。
 
-`--public-host` は手元PC から届く GPU マシンの名前か IP。セッションを作った
-クライアントに、ZMQ の宛先としてそのまま返す。
+ZMQ の宛先は、クライアントが HTTP で繋いだ宛先（`Host` ヘッダ）から自動で決まる。
+マシンに複数の IP があって決め打ちしたいときだけ `--public-host` で指定する。
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from capx.remote_env.server.sessions import Config, SessionManager
 
 def main(
     *,
-    public_host: str,
+    public_host: str | None = None,
     host: str = "0.0.0.0",
     port: int = 8200,
     port_start: int = 19500,
@@ -37,7 +37,7 @@ def main(
 ) -> None:
     """
     Args:
-        public_host: 手元PC から届く、この GPU マシンの名前か IP。
+        public_host: ZMQ の宛先を固定する。省略すると、クライアントが繋いだ宛先を使う。
         max_sessions: 同時セッション数。× 4GB がこのマシンの RAM に収まること。
         gpu_uuids: `nvidia-smi -L` の UUID をカンマ区切りで。セッションに順に割り当てる。
             省略すると環境変数 CAPX_GPU_UUIDS、それも無ければ全 GPU が見える。

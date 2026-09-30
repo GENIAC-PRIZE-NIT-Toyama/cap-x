@@ -17,9 +17,10 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import re
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from capx.remote_env.server.sessions import SessionError, SessionManager
@@ -33,6 +34,35 @@ REAP_INTERVAL_S = 60.0
 class CreateSession(BaseModel):
     task_id: str
     client_public_key: str
+
+
+#: `Host` ヘッダの host 部として受け入れる形。ホスト名・IPv4・角括弧付き IPv6。
+_HOST_RE = re.compile(r"^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9._-]+)$")
+
+
+def endpoint_host(request: Request, configured: str | None) -> str:
+    """クライアントに返す ZMQ の宛先ホストを決める。
+
+    明示の設定があればそれ。無ければ、クライアントがこの backend に HTTP で
+    繋いだときの宛先（`Host` ヘッダ）を使う。その宛先で HTTP が通ったのだから、
+    同じマシンの ZMQ ポートにも同じ宛先で届く。マシンに IP が複数あっても、
+    クライアントが実際に使った側が返る。
+
+    `Host` ヘッダはクライアントが決める値だが、返す先はその同じクライアント
+    だけなので、他人に向けた攻撃にはならない。それでも、ホスト名として
+    ありえない文字列は受け付けない。
+    """
+    if configured:
+        return configured
+    host = request.headers.get("host", "")
+    # ポートを外す。IPv6 は "[::1]:8200" の形なので角括弧の外の ":" だけを見る。
+    name = host.rsplit(":", 1)[0] if re.search(r"\]?:\d+$", host) else host
+    if not _HOST_RE.match(name):
+        raise HTTPException(
+            400,
+            "接続先のホスト名を決められない。--public-host で指定してください",
+        )
+    return name
 
 
 def parse_tokens(spec: str) -> dict[str, str]:
@@ -106,14 +136,19 @@ def create_app(
         return {"tasks": sorted(TASKS)}
 
     @app.post("/sessions")
-    async def create(body: CreateSession, owner: str = Depends(owner_of)) -> dict:
+    async def create(
+        body: CreateSession, request: Request, owner: str = Depends(owner_of)
+    ) -> dict:
         try:
             session = await manager.create(owner, body.task_id, body.client_public_key)
         except SessionError as exc:
             raise HTTPException(exc.status, str(exc)) from None
         return {
             "session_id": session.session_id,
-            "zmq_endpoint": f"tcp://{manager.config.public_host}:{session.spec.host_port}",
+            "zmq_endpoint": (
+                f"tcp://{endpoint_host(request, manager.config.public_host)}"
+                f":{session.spec.host_port}"
+            ),
             "server_public_key": session.server_public_key,
             "task_id": session.task_id,
         }
