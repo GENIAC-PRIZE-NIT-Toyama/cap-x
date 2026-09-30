@@ -39,6 +39,34 @@ COPY pyproject.toml uv.lock README.md ./
 COPY capx ./capx
 COPY env_configs ./env_configs
 
+# タスクのクラスに埋まっている正解コード（ORACLE_CODE / oracle_code）を取り除く。
+# 参加者の生成コードは、このコンテナの中で動く。ファイルが読めれば、正解が写せる。
+RUN python - <<'PY'
+import ast, pathlib
+
+names = {"ORACLE_CODE", "oracle_code"}
+stripped = 0
+for path in pathlib.Path("capx/envs/tasks").rglob("*.py"):
+    src = path.read_text(encoding="utf-8")
+    lines = src.splitlines(keepends=True)
+    hits = [
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)
+        and n.targets[0].id in names
+        and isinstance(n.value, ast.Constant)
+        and isinstance(n.value.value, str)
+    ]
+    for n in sorted(hits, key=lambda n: -n.lineno):
+        indent = " " * n.col_offset
+        lines[n.lineno - 1 : n.end_lineno] = [f"{indent}{n.targets[0].id} = None\n"]
+        stripped += 1
+    if hits:
+        path.write_text("".join(lines), encoding="utf-8")
+print("stripped oracle constants:", stripped)
+PY
+
 # --frozen は uv.lock のとおりに入れる。lock が pyproject.toml より古いと、
 # 足した依存（pyzmq など）が入らないまま起動して落ちる。
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -60,6 +88,11 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     MUJOCO_GL=egl \
     HOME=/tmp \
     MPLCONFIGDIR=/tmp/matplotlib
+
+# root で動かさない。--read-only と組み合わせるので、書けるのは tmpfs だけ。
+# backend の `docker run --user` も同じ値を指定している。
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin worker
+USER 10001:10001
 
 EXPOSE 19500
 

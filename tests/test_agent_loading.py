@@ -104,3 +104,24 @@ def test_missing_file_reports_the_resolved_path(tmp_path: Path) -> None:
 def test_loads_from_import_path() -> None:
     agent = load_agent("capx.baselines.oracle.OracleAgent")
     assert type(agent).__name__ == "OracleAgent"
+
+
+def test_step_output_is_clipped_to_the_budget() -> None:
+    """生成コードが大量に print しても、返す stdout / stderr は上限まで。"""
+    from types import SimpleNamespace
+
+    from capx.agent_api import Budget
+    from capx.local_env import LocalAgentEnv
+
+    class Env:
+        low_level_env = SimpleNamespace(_sim_step_count=0)
+
+        def step(self, code):
+            info = {"sandbox_rc": 0, "stdout": "x" * 5000, "stderr": "ok"}
+            return None, 0.0, False, False, info
+
+    env = LocalAgentEnv(Env(), budget=Budget(max_output_bytes=100))
+    result = env.step("print('x')")
+    assert len(result.stdout.encode()) < 200
+    assert "切り捨て" in result.stdout
+    assert result.stderr == "ok", "上限内はそのまま"

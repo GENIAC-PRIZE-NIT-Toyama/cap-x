@@ -183,8 +183,8 @@ class LocalAgentEnv:
         step = RecordedStep(
             code=code,
             ok=ok,
-            stdout=info.get("stdout", ""),
-            stderr=info.get("stderr", ""),
+            stdout=self._clip(info.get("stdout", "")),
+            stderr=self._clip(info.get("stderr", "")),
             reward=float(reward),
             task_completed=info.get("task_completed"),
             terminated=bool(terminated),
@@ -213,6 +213,15 @@ class LocalAgentEnv:
             video=self._encode_turn_video(frame_start, frame_end) if capture_video else None,
             video_media_type="video/mp4" if capture_video else None,
         )
+
+    def _clip(self, text: str) -> str:
+        """stdout / stderr を `Budget.max_output_bytes` までに切り詰める。"""
+        limit = self._budget.max_output_bytes
+        raw = text.encode("utf-8", errors="replace")
+        if len(raw) <= limit:
+            return text
+        head = raw[:limit].decode("utf-8", errors="ignore")
+        return f"{head}\n...[出力が上限 {limit} バイトを超えたため切り捨て]"
 
     def render(self, camera: str = "main") -> bytes:
         """JPEG の bytes を返す。`TaskSpec.cameras` に無い名前は拒否する。"""

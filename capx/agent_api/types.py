@@ -86,12 +86,16 @@ class Budget:
         trial_wall_clock_s: trial 全体の上限。LLM 待ち・通信待ち込みの安全網。
         max_steps: ``step()`` を呼べる回数。現行の ``MULTITURN_LIMIT`` 相当。
         max_code_bytes: 1 回の ``step()`` に渡せるコードのサイズ上限。
+        max_output_bytes: 1 回の ``step()`` が返す stdout / stderr それぞれの上限。
+            超えた分は切り捨てる（生成コードが大量に print しても、メモリと通信を
+            埋められないようにする）。
     """
 
     execution_time_s: float = 1000.0
     trial_wall_clock_s: float = 3000.0
     max_steps: int = 10
     max_code_bytes: int = 64 * 1024
+    max_output_bytes: int = 64 * 1024
 
 
 @dataclass

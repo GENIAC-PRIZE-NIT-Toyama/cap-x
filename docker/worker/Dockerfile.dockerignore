@@ -32,3 +32,9 @@ capx/third_party/LIBERO-PRO
 capx/third_party/libero_dependencies
 capx/third_party/curobo
 capx/third_party/verl
+
+# oracle（正解コード）を runtime image に入れない。worker は capx.baselines を
+# import しない。タスクのクラスに埋まっている ORACLE_CODE は、Dockerfile の
+# ビルド中に取り除く。
+capx/baselines
+env_configs/human_oracle_code

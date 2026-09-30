@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -32,8 +33,11 @@ TASKS: dict[str, TaskEntry] = {
 }
 
 #: runtime -> イメージ名。LIBERO は Phase 6 で足す。
+#: 本番では digest で固定する（タグは付け替えられる）:
+#:   CAPX_WORKER_IMAGE=capx-worker@sha256:...
+#: digest は `docker image inspect --format '{{.Id}}' capx-worker:latest` で分かる。
 IMAGES: dict[str, str] = {
-    "robosuite": "capx-worker:latest",
+    "robosuite": os.environ.get("CAPX_WORKER_IMAGE", "capx-worker:latest"),
 }
 
 

@@ -47,6 +47,10 @@ class Limits:
     cpus: str = "2"
     pids: int = 512
     tmpfs: str = "/tmp:rw,size=1g"
+    run_tmpfs: str = "/run:rw,size=16m"
+    nofile: int = 4096
+    #: worker イメージの USER と同じ。root で動かさない。
+    user: str = "10001:10001"
 
 
 @dataclass(frozen=True)
@@ -107,6 +111,12 @@ def run_command(spec: RunSpec) -> list[str]:
         "--memory", spec.limits.memory,
         "--cpus", spec.limits.cpus,
         "--tmpfs", spec.limits.tmpfs,
+        # 書けるのは tmpfs（/tmp と /run）だけ。イメージの中は書き換えられない。
+        "--read-only",
+        "--tmpfs", spec.limits.run_tmpfs,
+        "--user", spec.limits.user,
+        "--ulimit", f"nofile={spec.limits.nofile}:{spec.limits.nofile}",
+        "--ulimit", "core=0",
         # GPU。`--gpus` ではなく旧来の runtime 指定（workshop で検証済み。
         # `--gpus` は CDI 経由になり、libnvidia-gl が無いホストで失敗する）
         "--runtime", "nvidia",

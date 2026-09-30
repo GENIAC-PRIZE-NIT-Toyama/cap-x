@@ -156,3 +156,84 @@ def test_dockerfile_installs_from_the_lock_and_starts_the_worker() -> None:
     assert "--extra robosuite" in text
     assert "capx.remote_env.worker.server" in text
     assert f"EXPOSE {d.CONTAINER_PORT}" in text
+
+
+def test_rootfs_is_read_only_and_the_worker_is_not_root() -> None:
+    cmd = d.run_command(_spec())
+    assert "--read-only" in cmd
+    assert _flag_values(cmd, "--user") == ["10001:10001"]
+    tmpfs = _flag_values(cmd, "--tmpfs")
+    assert any(t.startswith("/tmp:") for t in tmpfs)
+    assert any(t.startswith("/run:") for t in tmpfs)
+
+
+def test_ulimits_are_set() -> None:
+    limits = _flag_values(d.run_command(_spec()), "--ulimit")
+    assert "core=0" in limits
+    assert any(x.startswith("nofile=") for x in limits)
+
+
+def test_the_default_seccomp_profile_is_never_switched_off() -> None:
+    """docker の既定の seccomp プロフィールに任せる。unconfined にしない。"""
+    opts = _flag_values(d.run_command(_spec()), "--security-opt")
+    assert not any("seccomp" in o for o in opts)
+
+
+def test_worker_image_can_be_pinned_by_digest(monkeypatch) -> None:
+    import importlib
+
+    from capx.remote_env.server import tasks
+
+    monkeypatch.setenv("CAPX_WORKER_IMAGE", "capx-worker@sha256:abc")
+    try:
+        assert importlib.reload(tasks).IMAGES["robosuite"] == "capx-worker@sha256:abc"
+    finally:
+        monkeypatch.delenv("CAPX_WORKER_IMAGE")
+        importlib.reload(tasks)
+
+
+def test_dockerfile_drops_root_and_keeps_oracle_out_of_the_image() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "docker/worker/Dockerfile").read_text(encoding="utf-8")
+    assert "USER 10001:10001" in text
+    ignore = (root / "docker/worker/Dockerfile.dockerignore").read_text(encoding="utf-8")
+    assert "capx/baselines" in ignore
+    assert "env_configs/human_oracle_code" in ignore
+
+
+def test_the_build_step_strips_oracle_code_from_task_modules(tmp_path, monkeypatch) -> None:
+    """Dockerfile に埋めた除去スクリプトを、そのまま取り出して実行する。"""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parent.parent / "docker/worker/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    script = text.split("RUN python - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+
+    tasks = tmp_path / "capx/envs/tasks/franka"
+    tasks.mkdir(parents=True)
+    module = tasks / "t.py"
+    module.write_text(
+        'ORACLE_CODE = """\nsecret_answer()\n"""\n'
+        "\n"
+        "class Task:\n"
+        "    oracle_code = ORACLE_CODE\n"
+        '    other = "keep me"\n'
+        "\n"
+        "class Other:\n"
+        '    oracle_code = "inline_secret()"\n',
+        encoding="utf-8",
+    )
+    subprocess.run([sys.executable, "-c", script], cwd=tmp_path, check=True)
+
+    out = module.read_text(encoding="utf-8")
+    assert "secret_answer" not in out and "inline_secret" not in out
+    assert 'other = "keep me"' in out
+    compile(out, "t.py", "exec")  # 壊れていない
+    ns: dict = {}
+    exec(out, ns)
+    assert ns["Task"].oracle_code is None
