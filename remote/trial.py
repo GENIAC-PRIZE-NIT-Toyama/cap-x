@@ -18,6 +18,7 @@ import tyro
 from capx.agent_api import EnvUnavailable
 from capx.bench import load_agent, make_agent_env, run_trial
 from capx.bench.args import AgentArgs
+from capx.bench.errors import explain, explain_load, highlight_generated_error
 
 HERE = Path(__file__).resolve().parent
 
@@ -54,7 +55,10 @@ def main(
 
     print(f"Agent : {agent_path}")
     ctx = AgentArgs(model=model).to_context()
-    runner = load_agent(str(agent_path), ctx=ctx)
+    try:
+        runner = load_agent(str(agent_path), ctx=ctx)
+    except Exception as exc:
+        sys.exit(str(explain_load(exc, str(agent_path))))
 
     env = _connect(endpoint, server_url, task)
     config = {"output_dir": output_dir, "record_video": False}
@@ -67,11 +71,12 @@ def main(
             for trial in range(1, total_trials + 1)
         ]
     except EnvUnavailable as exc:
-        sys.exit(f"GPU マシン側の環境に繋がらなくなった: {exc}")
+        sys.exit(str(explain(exc)))
     finally:
+        steps = list(env.recorded_steps)
         env.close()
 
-    _show(summaries)
+    _show(summaries, steps)
 
 
 def _resolve_agent(spec: str) -> Path:
@@ -90,10 +95,10 @@ def _connect(endpoint: str | None, server_url: str | None, task: str):
             return RemoteAgentEnv(endpoint=endpoint)
         return make_agent_env(server_url=server_url, task_id=task)
     except Exception as exc:
-        sys.exit(f"GPU マシンに繋がらない（{endpoint or server_url}）: {exc}")
+        sys.exit(f"{explain(exc)}\n  接続先: {endpoint or server_url}")
 
 
-def _show(summaries) -> None:
+def _show(summaries, steps=()) -> None:
     """結果を人間向けに出す。Agent には渡らない（採点は Bench が読む）。"""
     print()
     for s in summaries:
@@ -102,8 +107,10 @@ def _show(summaries) -> None:
         print(f"  reward         : {s.reward:.4f}")
         print(f"  steps_used     : {s.num_code_blocks}")
         if not s.success:
-            print("  (コードの実行でエラーが出ました。stderr は下のログを見てください)")
-            print(s.log)
+            print("  (コードの実行でエラーが出ました)")
+            failed = next((st for st in reversed(steps) if not st.ok), None)
+            hint = highlight_generated_error(failed.code, failed.stderr) if failed else None
+            print(f"  {hint}" if hint else s.log)
     if len(summaries) > 1:
         done = sum(bool(s.task_completed) for s in summaries)
         mean = sum(s.reward for s in summaries) / len(summaries)

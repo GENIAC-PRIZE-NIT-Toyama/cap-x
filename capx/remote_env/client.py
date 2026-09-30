@@ -332,6 +332,11 @@ def _create_session(
             detail = response.json().get("detail", response.text)
         except Exception:
             detail = response.text
-        raise RuntimeError(f"セッションを作れなかった（{response.status_code}）: {detail}")
+        from capx.agent_api import CapacityFull, EnvStartFailed
+
+        message = f"セッションを作れなかった（{response.status_code}）: {detail}"
+        if response.status_code == 429:
+            raise CapacityFull(message)
+        raise EnvStartFailed(message)
     data = response.json()
     return data["zmq_endpoint"], data["session_id"], data["server_public_key"].encode("ascii")

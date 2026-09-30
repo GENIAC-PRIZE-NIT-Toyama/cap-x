@@ -168,6 +168,14 @@ class EnvUnavailable(RuntimeError):
     """
 
 
+class CapacityFull(EnvUnavailable):
+    """GPU マシンの同時セッションが上限。しばらく待てば空く。"""
+
+
+class EnvStartFailed(EnvUnavailable):
+    """セッションを作れなかった（選べないタスク・コンテナの起動失敗など）。"""
+
+
 @runtime_checkable
 class AgentEnv(Protocol):
     """Agent から見た環境。``step`` と ``render`` しか公開しない。

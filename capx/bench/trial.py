@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from capx.agent_api import Agent, AgentResult, Budget, BudgetExceeded, EnvUnavailable
 from capx.bench.artifacts import _build_log_lines
+from capx.bench.errors import explain
 from capx.utils.launch_utils import TrialSummary, _save_trial_artifacts
 
 if TYPE_CHECKING:
@@ -65,13 +66,13 @@ def run_trial(
         result = agent.run(env, task, budget)
     except BudgetExceeded as exc:
         # Agent の責任。リトライせず、その時点の状態で採点する。
-        failure = f"budget: {exc}"
+        failure = str(explain(exc))
         result = AgentResult()
     except EnvUnavailable:
         # 環境側の障害。Bench の呼び出し元が新しいセッションで作り直す。
         raise
     except Exception as exc:  # Agent のバグ。trial は失敗として記録する。
-        failure = f"agent_error: {exc!r}"
+        failure = str(explain(exc))
         result = AgentResult()
 
     outcome = env.evaluate()
