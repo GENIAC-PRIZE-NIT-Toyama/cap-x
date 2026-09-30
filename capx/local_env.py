@@ -214,6 +214,12 @@ class LocalAgentEnv:
             video_media_type="video/mp4" if capture_video else None,
         )
 
+    def set_frame_listener(self, listener: Any) -> None:
+        """録画フレームの通知先を設定する（ストリーミング用。無い env では何もしない）。"""
+        low = getattr(self._env, "low_level_env", None)
+        if hasattr(low, "set_frame_listener"):
+            low.set_frame_listener(listener)
+
     def _clip(self, text: str) -> str:
         """stdout / stderr を `Budget.max_output_bytes` までに切り詰める。"""
         limit = self._budget.max_output_bytes

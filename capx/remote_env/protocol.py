@@ -146,6 +146,18 @@ def response(to: Message, **payload: Any) -> Message:
     )
 
 
+def event(operation: str, session_id: str = "", **payload: Any) -> Message:
+    """サーバからの push。対応する request を持たない（ストリームのフレーム）。"""
+    return Message(
+        kind="event", operation=operation, session_id=session_id, request_id="", payload=payload
+    )
+
+
+#: ストリームのフレームを送る間隔の下限（10 fps）と JPEG の品質。
+STREAM_INTERVAL_S = 0.1
+STREAM_JPEG_QUALITY = 70
+
+
 def error(to: Message | None, message: str, kind: str = "agent_error") -> Message:
     """失敗を返す。`kind` は `capx.agent_api.FailureKind` に対応させる。
 

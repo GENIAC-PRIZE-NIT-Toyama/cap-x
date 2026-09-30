@@ -58,6 +58,13 @@ class WorkerServer:
         self._done: OrderedDict[str, Any] = OrderedDict()
         self._busy = False
         self._stop = threading.Event()
+        # ストリーミング。購読者がいる間だけ JPEG にする。最新の 1 枚だけ持つ。
+        self._subscribers: set[bytes] = set()
+        self._latest: tuple[int, bytes] | None = None
+        self._latest_lock = threading.Lock()
+        self._frame_seq = 0
+        self._sent_seq = 0
+        self._last_encode = 0.0
 
     # -- 実行スレッド ------------------------------------------------------
 
@@ -115,6 +122,52 @@ class WorkerServer:
 
         raise ValueError(f"unknown operation: {msg.operation}")
 
+    # -- ストリーミング ----------------------------------------------------
+
+    def _on_frame(self, frame: Any) -> None:
+        """シミュレータがフレームを録るたびに、実行スレッドから呼ばれる。
+
+        購読者がいなければ即座に返る（エンコードしない）。いても 10 fps に間引き、
+        最新の 1 枚だけを残す——古いフレームを溜めない。
+        """
+        from capx.remote_env import protocol
+
+        if not self._subscribers:
+            return
+        now = time.monotonic()
+        if now - self._last_encode < protocol.STREAM_INTERVAL_S:
+            return
+        self._last_encode = now
+        jpeg = _encode_jpeg(frame, protocol.STREAM_JPEG_QUALITY)
+        with self._latest_lock:
+            self._frame_seq += 1
+            self._latest = (self._frame_seq, jpeg)
+
+    def _push_frames(self, socket: Any) -> None:
+        """新しいフレームがあれば購読者へ送る。詰まっている購読者は飛ばす。"""
+        import zmq
+
+        from capx.remote_env import protocol
+
+        if not self._subscribers:
+            return
+        with self._latest_lock:
+            latest = self._latest
+        if latest is None or latest[0] <= self._sent_seq:
+            return
+        seq, jpeg = latest
+        self._sent_seq = seq
+        raw = protocol.encode(
+            protocol.event(
+                "frame", session_id=self._session_id, seq=seq, image=jpeg, media_type="image/jpeg"
+            )
+        )
+        for identity in list(self._subscribers):
+            try:
+                socket.send_multipart([identity, raw], flags=zmq.NOBLOCK)
+            except zmq.Again:
+                pass  # 受け取れない相手には送らない。次の最新を送る
+
     # -- I/O スレッド ------------------------------------------------------
 
     def serve(
@@ -171,6 +224,9 @@ class WorkerServer:
         socket.bind(f"tcp://{host}:{port}")
         logger.info("listening on tcp://%s:%d", host, port)
 
+        if hasattr(self._env, "set_frame_listener"):
+            self._env.set_frame_listener(self._on_frame)
+
         worker = threading.Thread(target=self._execute_loop, daemon=True)
         worker.start()
 
@@ -186,6 +242,8 @@ class WorkerServer:
                     except queue.Empty:
                         break
                     socket.send_multipart([identity, protocol.encode(reply)])
+
+                self._push_frames(socket)
 
                 if not poller.poll(POLL_MS):
                     continue
@@ -228,7 +286,15 @@ class WorkerServer:
 
         self._last_activity = time.monotonic()
 
+        if msg.operation == "subscribe":
+            self._subscribers.add(identity)
+            return protocol.response(msg, subscribed=True)
+        if msg.operation == "unsubscribe":
+            self._subscribers.discard(identity)
+            return protocol.response(msg, subscribed=False)
+
         if msg.operation == "close":
+            self._subscribers.discard(identity)
             self._stop.set()
             return protocol.response(msg, closed=True)
 
@@ -245,6 +311,17 @@ class WorkerServer:
         self._busy = True
         self._jobs.put(_Job(message=msg, identity=identity))
         return None
+
+
+def _encode_jpeg(frame: Any, quality: int) -> bytes:
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(frame)).save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
 
 
 def _failure_kind(exc: Exception) -> str:

@@ -30,6 +30,14 @@ class FrameBufferMixin:
         self._frame_seq_next = 0
         self._pinned_seqs: set[int] = set()
         self._frame_stats: dict = {"recorded": 0, "dropped": 0, "rate_changes": []}
+        self._frame_listener = None
+
+    def set_frame_listener(self, listener) -> None:
+        """フレームを録るたびに `listener(frame)` を呼ぶ。ストリーミング用。
+
+        購読者がいなければ、listener の側で何もせずに返すこと（エンコード等をしない）。
+        """
+        self._frame_listener = listener
 
     def _append_frame(self, frame: np.ndarray, wrist: np.ndarray | None = None) -> None:
         self._sync_seqs()
@@ -39,6 +47,8 @@ class FrameBufferMixin:
         self._frame_stats["recorded"] += 1
         if wrist is not None:
             self._wrist_frame_buffer.append(wrist)
+        if self._frame_listener is not None:
+            self._frame_listener(frame)
         self._thin_frames()
 
     def _reset_frame_recording(self) -> None:

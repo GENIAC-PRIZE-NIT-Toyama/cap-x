@@ -10,6 +10,8 @@ backend は経路に入らない。セッションを作るのは HTTP だが、
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from capx.agent_api import (
@@ -68,6 +70,7 @@ class RemoteAgentEnv:
         self._curve_keypair = curve_keypair
         self._task: TaskSpec | None = None
         self._steps: list = []
+        self._frame_handler: Callable[[int, bytes], None] | None = None
 
         if server_url:
             if not task_id:
@@ -116,6 +119,43 @@ class RemoteAgentEnv:
         payload = self._call("render", camera=camera)
         image = payload.get("image") or b""
         return bytes(image)
+
+    # -- ストリーミング ----------------------------------------------------
+
+    def subscribe_frames(
+        self,
+        on_frame: Callable[[int, bytes], None] | None = None,
+        *,
+        save_dir: str | None = None,
+    ) -> None:
+        """実行中のフレーム（JPEG、最大 10 fps）を受け取る。既定は off。
+
+        フレームは `step()` を待っている間に届き、この関数を呼んだスレッドで
+        `on_frame(seq, jpeg)` が呼ばれる。`save_dir` を渡すと `frame_000001.jpg`
+        の名前で保存する。購読しなければ、worker はエンコードもしない。
+        """
+        directory = Path(save_dir) if save_dir else None
+        if directory is not None:
+            directory.mkdir(parents=True, exist_ok=True)
+
+        def handler(seq: int, jpeg: bytes) -> None:
+            if directory is not None:
+                (directory / f"frame_{seq:06d}.jpg").write_bytes(jpeg)
+            if on_frame is not None:
+                on_frame(seq, jpeg)
+
+        self._frame_handler = handler
+        self._call("subscribe")
+
+    def unsubscribe_frames(self) -> None:
+        self._call("unsubscribe")
+        self._frame_handler = None
+
+    def _handle_event(self, event: Any) -> None:
+        if event.operation == "frame" and self._frame_handler is not None:
+            self._frame_handler(
+                int(event.payload.get("seq", 0)), bytes(event.payload.get("image", b""))
+            )
 
     def close(self) -> None:
         if self._socket is None:
@@ -237,6 +277,9 @@ class RemoteAgentEnv:
                 raw = self._socket.recv()
                 reply = protocol.decode(raw)
 
+                if reply.kind == "event":
+                    self._handle_event(reply)
+                    continue  # ストリームのフレーム。本命の応答を待ち続ける
                 if reply.operation == "ping":
                     continue  # 割り込んだ heartbeat の応答。本命を待ち続ける
                 if reply.request_id and reply.request_id != message.request_id:
