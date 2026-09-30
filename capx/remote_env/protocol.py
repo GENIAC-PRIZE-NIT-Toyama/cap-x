@@ -155,7 +155,7 @@ def event(operation: str, session_id: str = "", **payload: Any) -> Message:
 
 #: ストリームのフレームを送る間隔の下限（10 fps）と JPEG の品質。
 STREAM_INTERVAL_S = 0.1
-STREAM_JPEG_QUALITY = 70
+STREAM_JPEG_QUALITY = 80
 
 
 def error(to: Message | None, message: str, kind: str = "agent_error") -> Message:
