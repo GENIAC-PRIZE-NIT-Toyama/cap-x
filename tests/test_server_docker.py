@@ -126,3 +126,33 @@ def test_cleanup_is_one_command_per_step() -> None:
     assert cmds[0][:3] == ["docker", "rm", "-f"]
     assert cmds[-1][:3] == ["docker", "network", "rm"]
     assert len(cmds) == 1 + len(d.PROXIES) + 1
+
+
+def test_compose_proxy_names_match_the_code() -> None:
+    """compose のコンテナ名と `PROXIES` がずれると、セッションを作る段階で
+    `docker network connect` が失敗する。起動するまで気づけないので、ここで押さえる。
+    """
+    import re
+    from pathlib import Path
+
+    compose = Path(__file__).resolve().parent.parent / "docker/backend/docker-compose.yml"
+    names = set(re.findall(r"container_name: (\S+)", compose.read_text(encoding="utf-8")))
+    assert names == {name for name, _port in d.PROXIES.values()}
+
+
+def test_dockerfile_installs_from_the_lock_and_starts_the_worker() -> None:
+    """`uv sync --frozen`（lock どおり）と、worker の起動を押さえる。
+
+    --frozen が外れると lock を再解決して、submodule や CUDA の無いビルド環境で
+    失敗するか、lock と違うものが入る。ENTRYPOINT が違えば、コンテナは起動して
+    何もせず終わる。
+    """
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parent.parent / "docker/worker/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert "uv sync --frozen" in text
+    assert "--extra robosuite" in text
+    assert "capx.remote_env.worker.server" in text
+    assert f"EXPOSE {d.CONTAINER_PORT}" in text

@@ -106,10 +106,17 @@ Cloudflare Tunnel は使わず全部ポート解放（平文 HTTP）。外部か
 
 | メソッド | パス | 内容 |
 | --- | --- | --- |
-| POST | `/sessions` | `{task_id, seed, cameras, client_public_key}` → `{session_id, zmq_endpoint, server_public_key, task}` |
-| POST | `/sessions/{id}/finalize` | `{}` → backend が worker から採点を取得し、不変の `TrialResult` を返す |
-| DELETE | `/sessions/{id}` | 終了 |
-| GET | `/sessions` | 一覧・状態（管理者限定） |
+| POST | `/sessions` | `{task_id, client_public_key}` → `{session_id, zmq_endpoint, server_public_key, task_id}` |
+| DELETE | `/sessions/{id}` | 終了。自分のセッションだけ（他人のものは 404） |
+| GET | `/sessions` | 自分のセッション一覧 |
+| GET | `/tasks` | 選べるタスク（allowlist） |
+| GET | `/health` | 認証なし |
+
+**採点は `/finalize` ではなく、ZMQ の `evaluate` で worker から直接取る。**
+当初は backend 経由（`/finalize`）にする設計だったが、守りたかったのは
+「クライアントが値を送って書き換えられない」ことで、それは `evaluate` が
+worker の計算結果を**読む**だけの操作であれば満たされる。backend を経由させると
+データ面に backend が入り、構造が複雑になる。
 
 クライアントから任意の `env_config` を受けない。Hydra 風の `_target_` を含む設定を
 受理すると任意 import / instantiate の入口になるので、`task_id` のような狭い入力を
@@ -133,12 +140,14 @@ push を兼ねる。シリアライズは既存の `capx/utils/msgpack_server_cl
 （msgpack + msgpack_numpy）を流用するが、message size 上限・schema・version が
 無いため、着想の流用にとどめ新しい protocol module を作る。
 
-### ポート
+### ポート（公開するのは 1 セッション 1 つ）
+
+backend は worker に HTTP で話さない。生存確認も、backend 専用の CURVE 鍵で
+`ping` する。だからコンテナが 127.0.0.1 に公開する HTTP ポートは要らない。
 
 ```
 session_id ─┬─ container:  capx-ws-<id>
             ├─ network:    capx-ws-net-<id>  (--internal)
-            ├─ http_port:  18500-18999  → 127.0.0.1 のみ（backend 用）
             ├─ zmq_port:   19500-19599  → 0.0.0.0 公開（RemoteEnv 用）
             ├─ curve_keys: セッションごとに生成
             └─ last_active → idle 回収
@@ -205,7 +214,7 @@ image の digest pin、stdout/stderr とコードサイズの上限。
 2 の境界は **プロセス分離**。生成コード実行プロセスと Gym 所有プロセスを分け、
 API を RPC スタブとして渡す。reward オブジェクトが生成コード側のプロセスに存在しない状態を作る。
 
-3 の境界は **サーバ側採点**。`/finalize` で backend が worker から採点結果を取得し、
+3 の境界は **サーバ側採点**。`evaluate` は worker が計算した結果を読むだけで、
 クライアントは値を送らない。
 
 oracle ソースも worker runtime image から除く。生成コードがパッケージソースを読めるなら、
@@ -229,7 +238,7 @@ oracle ソースも worker runtime image から除く。生成コードがパッ
 
 | 種類 | 扱い |
 | --- | --- |
-| 予算超過（`execution_time_s` / `trial_wall_clock_s`） | **リトライしない**。その時点で finalize し、失敗として記録 |
+| 予算超過（`execution_time_s` / `trial_wall_clock_s`） | **リトライしない**。その時点の状態で採点し、失敗として記録 |
 | インフラ障害（コンテナ異常終了、ZMQ 切断、GPU OOM、セッション作成失敗） | **リトライする**（最大 3 回）。回数を結果に記録 |
 
 タイムアウト後の env は再利用しない。**retry ごとに新規セッションを作る。**
@@ -600,7 +609,7 @@ Phase 3.5 は次で検証する。
 | 3 | 設定・CLI 分割と `local/` | 既存 YAML が警告つきで従来どおり動く |
 | 3.5 | 依存分離（extras） | **submodule 無しの clone で `cd remote && uv sync` が通る**。import 衛生テストが通る |
 | 4A | worker コンテナ（Robosuite） | プロセス境界・バッファ・サーバ側採点が動く（request/response のみ） |
-| 4B | backend・認証・quota | 認証付きで 1 セッション作成・破棄・finalize が通る |
+| 4B | backend・認証・quota | 認証付きで 1 セッション作成・破棄が通る |
 | 4C | RemoteAgentEnv・`remote/` | 手元PC から 1 trial 回り、Local と結果が一致 |
 | 4D | ストリーミング | 購読・backpressure・最新 1 枚が動く |
 | 5 | 指標の整備 | 異なる Agent の結果が同じ形式で並べられる |
