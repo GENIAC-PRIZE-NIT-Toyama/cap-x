@@ -1,8 +1,11 @@
 """いちばん小さい Agent。ここから書き換えて自分の Agent にする。
 
 ルールは 2 つだけ。
-  1. `Agent` という名前のクラスを作る
+  1. `Agent` という名前のクラスを作り、`BaseAgent` を継承する
   2. `run(self, env, task, budget)` を持たせる
+
+`BaseAgent` を継承しておくと、`run` を書き忘れたときに GPU マシンへ繋ぐ前に
+エラーで教えてくれる。エディタの補完も効く。
 
 `env.step(code)` でロボットを動かすコードを送ると、GPU マシンで実行されて
 結果（stdout / stderr）が返ってくる。`env.render()` で今の画像（JPEG）が取れる。
@@ -10,10 +13,10 @@
 `trial.py` が表示する。
 """
 
-from capx.agent_api import AgentEnv, AgentResult, Budget, TaskSpec
+from capx.agent_api import AgentEnv, AgentResult, BaseAgent, Budget, TaskSpec
 
 
-class Agent:
+class Agent(BaseAgent):
     def run(self, env: AgentEnv, task: TaskSpec, budget: Budget) -> AgentResult:
         # task.instruction … やること / task.api_docs … 使える関数の説明
         goal = next(

@@ -122,11 +122,22 @@ def _construct(cls: type, ctx: Any) -> Agent:
     署名は `(self, /, *args, **kwargs)` なので「引数を取る」と読めてしまうが、
     実際に渡すと TypeError になる。継承したものかどうかで判定する。
     """
-    if "__init__" not in cls.__dict__:
+    if inspect.isabstract(cls):
+        missing = ", ".join(sorted(getattr(cls, "__abstractmethods__", ())))
+        raise TypeError(
+            f"{cls.__name__} に {missing} が無い。`def {missing}(self, env, task, budget):` を書く"
+        )
+
+    # 自分で定義していなくても、親クラス（object 以外）が定義していればそれを見る。
+    # 共通処理を親クラスにまとめ、`__init__(ctx)` をそこに書く書き方を通すため。
+    owner = next(
+        (c for c in cls.__mro__ if c is not object and "__init__" in c.__dict__), None
+    )
+    if owner is None:
         return cls()
 
     try:
-        signature = inspect.signature(cls.__init__)
+        signature = inspect.signature(owner.__init__)
     except (TypeError, ValueError):
         return cls()
 

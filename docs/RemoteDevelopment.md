@@ -470,7 +470,10 @@ agent:
 ### Agent の書式
 
 ファイルパス + フラットな CLI。規約は「ファイルが `Agent` クラスを定義し、
-`run(env, task, budget)` を持つ」の 1 つだけ。
+`run(env, task, budget)` を持つ」の 1 つだけ。`Agent` は `BaseAgent` を継承して書く
+（`run` の書き忘れを、GPU マシンに繋ぐ前に検出できる。エディタの補完も効く）。
+クラス名を `Agent` に固定する理由は `capx/agent_api/types.py` の `BaseAgent` に書いた。
+継承しない `class Agent:` も読み込める。
 
 ```bash
 uv run remote/trial.py --task cube_stack --agent agents/my_agent.py --model <model>
@@ -478,7 +481,9 @@ uv run remote/trial.py --task cube_stack --agent agents/my_agent.py --model <mod
 
 ```python
 # agents/my_agent.py
-class Agent:
+from capx.agent_api import AgentResult, BaseAgent
+
+class Agent(BaseAgent):
     def __init__(self, ctx):        # 任意。model / server_url / api_key / wire が入る
         self.ctx = ctx
 

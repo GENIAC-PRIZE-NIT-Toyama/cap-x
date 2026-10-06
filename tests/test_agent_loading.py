@@ -125,3 +125,61 @@ def test_step_output_is_clipped_to_the_budget() -> None:
     assert len(result.stdout.encode()) < 200
     assert "切り捨て" in result.stdout
     assert result.stderr == "ok", "上限内はそのまま"
+
+
+def _load_source(tmp_path, source: str):
+    from capx.bench import load_agent
+
+    path = tmp_path / "agent_under_test.py"
+    path.write_text(source, encoding="utf-8")
+    return load_agent(str(path), ctx="CTX")
+
+
+def test_an_agent_that_inherits_base_agent_is_loaded(tmp_path) -> None:
+    agent = _load_source(
+        tmp_path,
+        "from capx.agent_api import AgentResult, BaseAgent\n"
+        "class Agent(BaseAgent):\n"
+        "    def run(self, env, task, budget):\n"
+        "        return AgentResult()\n",
+    )
+    assert type(agent).__name__ == "Agent"
+
+
+def test_forgetting_run_is_caught_before_connecting(tmp_path) -> None:
+    """`run` を書き忘れたら、読み込みの時点で何が足りないかを言う。"""
+    import pytest
+
+    with pytest.raises(TypeError, match="run"):
+        _load_source(
+            tmp_path,
+            "from capx.agent_api import BaseAgent\n"
+            "class Agent(BaseAgent):\n"
+            "    def runn(self, env, task, budget):\n"
+            "        pass\n",
+        )
+
+
+def test_ctx_reaches_an_init_defined_on_a_parent_class(tmp_path) -> None:
+    """共通処理を親クラスにまとめ、`__init__(ctx)` をそこに書いても ctx が届く。"""
+    agent = _load_source(
+        tmp_path,
+        "from capx.agent_api import AgentResult, BaseAgent\n"
+        "class MyBase(BaseAgent):\n"
+        "    def __init__(self, ctx):\n"
+        "        self.ctx = ctx\n"
+        "class Agent(MyBase):\n"
+        "    def run(self, env, task, budget):\n"
+        "        return AgentResult()\n",
+    )
+    assert agent.ctx == "CTX"
+
+
+def test_a_plain_class_without_inheritance_still_loads(tmp_path) -> None:
+    agent = _load_source(
+        tmp_path,
+        "class Agent:\n"
+        "    def run(self, env, task, budget):\n"
+        "        return None\n",
+    )
+    assert type(agent).__name__ == "Agent"

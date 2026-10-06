@@ -11,6 +11,7 @@ bytes で受け渡す）。
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -214,7 +215,8 @@ class Agent(Protocol):
     """参加者が書くもの。1 ファイル 1 エージェント。
 
     規約はこれだけ——ファイルが ``Agent`` という名前のクラスを定義し、
-    ``run(env, task, budget)`` を持つこと。``__init__(ctx)`` は任意で、
+    ``run(env, task, budget)`` を持つこと。書くときは ``BaseAgent`` を継承する
+    （下記）。この ``Agent`` は型の説明で、継承しなくても ``run`` を持てば通る。``__init__(ctx)`` は任意で、
     受け取らない実装も許容する。
 
     Example:
@@ -230,3 +232,38 @@ class Agent(Protocol):
 
     def run(self, env: AgentEnv, task: TaskSpec, budget: Budget) -> AgentResult:
         ...
+
+
+class BaseAgent(ABC):
+    """参加者が継承する土台。``run`` を必ず実装させる。
+
+        from capx.agent_api import AgentEnv, AgentResult, BaseAgent, Budget, TaskSpec
+
+        class Agent(BaseAgent):
+            def run(self, env: AgentEnv, task: TaskSpec, budget: Budget) -> AgentResult:
+                ...
+
+    **継承する利点**
+
+    - ``run`` を書き忘れたり名前を打ち間違えたりすると、Agent を作る時点で
+      （GPU マシンに繋ぐ前に）エラーになる。継承しなければ、呼び出すまで気づけない。
+    - エディタが継承元から ``run`` の形と型を知るので、``env`` / ``task`` /
+      ``budget`` の補完が効く。
+
+    **クラス名は ``Agent`` に固定し、土台は ``BaseAgent`` という別名にした理由**
+
+    - Bench はファイルの中の ``Agent`` という名前のクラスを使う。名前で決まるので、
+      どのクラスを使うかが常に 1 つに定まる。
+    - 土台も ``Agent`` という名前で取り込ませると、ファイルの中の ``Agent`` が土台
+      自体を指してしまい、参加者のクラスと区別できない。
+    - クラス名を自由にする（「``BaseAgent`` を継承したクラスを探す」）方式は採らな
+      かった。1 ファイル 1 Agent の決まりでは名前で表せることが少なく（区別はファイル
+      名でつく）、共通処理を親クラスにまとめると継承したクラスが複数になって、どれを
+      使うか決める規則が別に要るため。名前が ``Agent`` なら、親クラスは何個あってもよい。
+
+    継承しない ``class Agent:``（``run`` を持つだけ）も、これまでどおり読み込める。
+    """
+
+    @abstractmethod
+    def run(self, env: AgentEnv, task: TaskSpec, budget: Budget) -> AgentResult:
+        """環境を操作して課題を解く。採点は Bench がこのあと行う。"""

@@ -29,6 +29,8 @@ cp agents/example_agent.py agents/my_agent.py
 uv run --env-file .env trial.py --agent agents/my_agent.py
 ```
 
+クラス名は `Agent` のまま、`BaseAgent` を継承して `run` を書く（例のとおり）。
+
 - `env.step(code)` … ロボットを動かす Python コードを送る。結果が返る
 - `env.render()` … 今の画像（JPEG）
 - `task.instruction` / `task.api_docs` … やることと、使える関数の説明
