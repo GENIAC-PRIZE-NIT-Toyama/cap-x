@@ -13,6 +13,7 @@ from robot_descriptions.loaders.yourdfpy import load_robot_description
 from viser.extras import ViserUrdf
 
 from capx.envs.base import BaseEnv
+from capx.utils.frame_buffer import FrameBufferMixin
 from capx.integrations.libero import load_libero_task
 from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import depth_color_to_pointcloud
@@ -31,11 +32,14 @@ from libero.utils import get_libero_path  # type: ignore[import-not-found]
 #     ) from e
 
 
-class FrankaLiberoEnv(BaseEnv):
+class FrankaLiberoEnv(FrameBufferMixin, BaseEnv):
     """Franka Libero environment.
 
     This environment wraps LIBERO's Franka environment.
     """
+
+    #: 何 sim ステップごとに録るか（従来どおり 4）。
+    _SUBSAMPLE_RATE: int = 4
 
     def __init__(
         self,
@@ -77,13 +81,14 @@ class FrankaLiberoEnv(BaseEnv):
         self._current_reward = None
         self._current_done = None
 
-        # Video capture
+        # Video capture。バッファは FrameBufferMixin（上限と間引き）。
         self._record_frames = False
-        self._frame_buffer: list[np.ndarray] = []
-        self._wrist_frame_buffer: list[np.ndarray] = []
         self._record_wrist_camera = False
+        # カメラ名。robosuite 系と同じ属性名にして、Bench / worker が同じ読み方をする。
+        self.save_camera_name = "agentview"
+        self.render_camera_names = ["agentview"]
         self._wrist_camera_name = "robot0_eye_in_hand"
-        self._subsample_rate = 4
+        self._init_frame_buffer()
         self._full_viser_rate = 20  # Full scene update every 20 steps (cameras + pointcloud)
 
         # Robot link indices for transforms
@@ -540,58 +545,35 @@ class FrankaLiberoEnv(BaseEnv):
         self._record_frames = enabled
         self._record_wrist_camera = wrist_camera
         if clear:
-            self._frame_buffer.clear()
-            self._wrist_frame_buffer.clear()
+            self._reset_frame_recording()
         if enabled:
             self._record_frame()
-
-    def get_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
-        frames = [frame.copy() for frame in self._frame_buffer]
-        if clear:
-            self._frame_buffer.clear()
-        return frames
-
-    def get_video_frame_count(self) -> int:
-        return len(self._frame_buffer)
-
-    def get_video_frames_range(self, start: int, end: int) -> list[np.ndarray]:
-        return [frame.copy() for frame in self._frame_buffer[start:end]]
-
-    def get_wrist_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
-        frames = [frame.copy() for frame in self._wrist_frame_buffer]
-        if clear:
-            self._wrist_frame_buffer.clear()
-        return frames
-
-    def get_wrist_video_frames_range(self, start: int, end: int) -> list[np.ndarray]:
-        return [frame.copy() for frame in self._wrist_frame_buffer[start:end]]
 
     def _record_frame(self) -> None:
         if not self._record_frames:
             return
 
         frame = self.handle.env.sim.render(
-            camera_name="agentview",
+            camera_name=self.save_camera_name,
             width=self._render_width,
             height=self._render_height,
             depth=False,
         )
-        self._frame_buffer.append(frame[::-1])  # Flip vertically
-
+        wrist = None
         if self._record_wrist_camera:
-            wrist_frame = self.handle.env.sim.render(
+            wrist = self.handle.env.sim.render(
                 camera_name=self._wrist_camera_name,
                 width=self._render_width,
                 height=self._render_height,
                 depth=False,
-            )
-            self._wrist_frame_buffer.append(wrist_frame[::-1])
+            )[::-1]
+        self._append_frame(frame[::-1], wrist)  # Flip vertically
 
     def render(self, mode: str = "rgb_array") -> np.ndarray:  # type: ignore[override]
         if mode != "rgb_array":
             raise ValueError("Only rgb_array render mode is supported")
         frame = self.handle.env.sim.render(
-            camera_name="agentview",
+            camera_name=self.save_camera_name,
             width=self._render_width,
             height=self._render_height,
             depth=False,

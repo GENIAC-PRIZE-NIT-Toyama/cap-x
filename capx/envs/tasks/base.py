@@ -77,6 +77,10 @@ class CodeExecEnvConfig:
     """
 
 
+#: LIBERO の設定ファイルのプロンプトにある、ゴール文の置き場所。
+LIBERO_GOAL_PLACEHOLDER = "{libero_environment_goal}"
+
+
 class SimpleExecutor:
     """Minimal in-process code executor with full imports allowed.
 
@@ -268,6 +272,28 @@ class CodeExecutionEnvBase(Env):
                 return get_env(src, privileged=privileged, enable_render=enable_render, viser_debug=viser_debug)
         return src
 
+    def _fill_task_goal(self) -> None:
+        """プロンプトの `{libero_environment_goal}` を、実際のゴール文に置き換える。
+
+        LIBERO は 1 つのタスククラスを suite とタスク番号だけ変えて使い回すので、
+        ゴール文はシミュレータを作ったあとに `handle.task_language` から決まる。
+        ここで埋めると、`info["task_prompt"]`（Agent に渡る `TaskSpec.instruction`）と
+        LLM に送るプロンプトの両方に、実際の文が入る。旧来の `_patch_libero_goal`
+        （`capx/envs/trial.py`）は、置き換え済みの文を見て何もしない。
+        """
+        goal = getattr(getattr(self.low_level_env, "handle", None), "task_language", None)
+        if not goal or LIBERO_GOAL_PLACEHOLDER not in (self._task_prompt or ""):
+            return
+        self._task_prompt = self._task_prompt.replace(LIBERO_GOAL_PLACEHOLDER, goal)
+        for message in self._full_prompt:
+            content = message.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        part["text"] = part["text"].replace(LIBERO_GOAL_PLACEHOLDER, goal)
+            elif isinstance(content, str):
+                message["content"] = content.replace(LIBERO_GOAL_PLACEHOLDER, goal)
+
     def _get_observation(self) -> dict[str, Any]:
         """
         Gets the observation of the environment. This should be consistent for all environments, where observation from low level environment
@@ -297,6 +323,7 @@ class CodeExecutionEnvBase(Env):
         """
         self._step_count = 0
         obs, info = self.low_level_env.reset(seed=seed, options=options)
+        self._fill_task_goal()
         obs.update(self._get_observation())
         # Reinitialize globals for a fresh episode and prime INPUTS with the reset observation
         self._init_exec_globals()
