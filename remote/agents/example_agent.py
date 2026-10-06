@@ -10,11 +10,11 @@
 `trial.py` が表示する。
 """
 
-from capx.agent_api import AgentResult
+from capx.agent_api import AgentEnv, AgentResult, Budget, TaskSpec
 
 
 class Agent:
-    def run(self, env, task, budget):
+    def run(self, env: AgentEnv, task: TaskSpec, budget: Budget) -> AgentResult:
         # task.instruction … やること / task.api_docs … 使える関数の説明
         goal = next(
             (line for line in task.instruction.splitlines() if line.startswith("Goal")),

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import tyro
@@ -93,12 +94,17 @@ def main(
 #: GPU マシン側の障害（接続断など）で trial をやり直す回数。
 MAX_INFRA_RETRIES = 3
 
+#: やり直すまでの待ち。失敗のたびに倍にする（10 秒 → 20 秒 → 40 秒）。続けて失敗する
+#: ときは GPU マシン側が不調なので、すぐ作り直し続けて負荷をかけない。
+RETRY_BASE_WAIT_S = 10.0
 
-def _run_with_retries(holder, runner, trial, config, seed, meta, reconnect):
+
+def _run_with_retries(holder, runner, trial, config, seed, meta, reconnect, sleep=time.sleep):
     """環境側の障害なら、新しいセッションを作り直して同じ trial をやり直す。
 
     Agent の責任（予算超過・Agent のバグ）ではリトライしない。中断した後の環境は
     状態が分からないので、使い回さず作り直す。やり直した回数は結果に残る。
+    やり直す前に、失敗のたびに倍にした時間（10 秒、20 秒、40 秒）だけ待つ。
     """
     retries = 0
     while True:
@@ -111,8 +117,13 @@ def _run_with_retries(holder, runner, trial, config, seed, meta, reconnect):
             if retries >= MAX_INFRA_RETRIES:
                 raise
             retries += 1
-            print(f"{explain(exc)}\n  新しいセッションでやり直す（{retries}/{MAX_INFRA_RETRIES}）")
+            wait_s = RETRY_BASE_WAIT_S * 2 ** (retries - 1)
+            print(
+                f"{explain(exc)}\n  {wait_s:.0f} 秒待って、新しいセッションでやり直す"
+                f"（{retries}/{MAX_INFRA_RETRIES}）"
+            )
             holder["env"].close()
+            sleep(wait_s)
             holder["env"] = reconnect()
 
 
