@@ -200,7 +200,8 @@ def save_trial_extras(
     root = Path(trial_dir)
     root.mkdir(parents=True, exist_ok=True)
     (root / "result.json").write_text(
-        json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(result, indent=2, ensure_ascii=False, default=_json_default),
+        encoding="utf-8",
     )
 
     steps_dir = root / "steps"
@@ -247,6 +248,21 @@ def save_trial_extras(
         image_dir.mkdir(exist_ok=True)
         for i, data in enumerate(images, 1):
             (image_dir / f"render_{i:03d}.jpg").write_bytes(data)
+
+
+def _json_default(value: Any) -> Any:
+    """JSON にできない numpy の値を Python の値にする。
+
+    シミュレータによっては、真偽値や数値を numpy の型で返す（LIBERO の
+    `task_completed` がそうだった）。値の出どころ（`LocalAgentEnv`）でも揃えているが、
+    今後のシミュレータで漏れても結果を書けるように、ここでも受ける。知らない型は
+    これまでどおりエラーにする（文字列にして黙って書くと、おかしな値に気づけない）。
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def _concat_videos(paths: list, out) -> None:

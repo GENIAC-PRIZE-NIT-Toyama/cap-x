@@ -147,10 +147,10 @@ class LocalAgentEnv:
         """
         return TrialOutcome(
             reward=self._last_reward,
-            task_completed=self._last_info.get("task_completed"),
+            task_completed=_optional_bool(self._last_info.get("task_completed")),
             terminated=self._last_terminated,
             truncated=self._last_truncated,
-            sandbox_rc=self._last_info.get("sandbox_rc", 1),
+            sandbox_rc=int(self._last_info.get("sandbox_rc", 1)),
             steps=list(self._steps),
         )
 
@@ -191,7 +191,7 @@ class LocalAgentEnv:
             stdout=self._clip(info.get("stdout", "")),
             stderr=self._clip(info.get("stderr", "")),
             reward=float(reward),
-            task_completed=info.get("task_completed"),
+            task_completed=_optional_bool(info.get("task_completed")),
             terminated=bool(terminated),
             truncated=bool(truncated),
             execution_time_s=elapsed_ns / 1e9,
@@ -318,3 +318,13 @@ class LocalAgentEnv:
             path = Path(tmp) / "turn.mp4"
             imageio.mimsave(path, frames, fps=30)
             return path.read_bytes()
+
+
+def _optional_bool(value: Any) -> bool | None:
+    """シミュレータの真偽値を Python の `bool` にする。分からないとき（None）は None のまま。
+
+    LIBERO の `check_success()` は numpy の真偽値（`numpy.bool_`）を返すことがある
+    （numpy 配列の比較を `and` でつないだ値）。そのまま渡すと、ZMQ を通っても numpy の
+    型のまま届き、`result.json` に書けない。Bench に渡す前に、ここで揃える。
+    """
+    return None if value is None else bool(value)
