@@ -20,6 +20,22 @@ uv run --env-file .env trial.py
 uv run --env-file .env doctor.py --agent agents/my_agent.py
 ```
 
+## タスクを選ぶ
+
+`--task` で選ぶ。省略すると `cube_stack`。
+
+```bash
+uv run --env-file .env trial.py --task libero_object_3
+```
+
+| 種類 | 名前 |
+|---|---|
+| robosuite | `cube_stack`, `cube_lifting`, `cube_restack`, `nut_assembly`, `spill_wipe`, `two_arm_lift` |
+| LIBERO（標準 5 suite、130 タスク） | `libero_spatial_0`〜`9`, `libero_object_0`〜`9`, `libero_goal_0`〜`9`, `libero_10_0`〜`9`, `libero_90_0`〜`89` |
+
+今選べる一覧は `doctor.py` でも見られる。LIBERO のタスクは、やること（ゴール文）が
+タスクごとに違う。`task.instruction` に入っている。
+
 ## 自分の Agent を書く
 
 `agents/example_agent.py` をコピーして中身を書き換える。

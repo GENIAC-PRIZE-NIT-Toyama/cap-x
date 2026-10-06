@@ -406,6 +406,27 @@ local モードは従来どおり 1 venv 1 simulator。
 `cap-x-workshop` の main（`6fa890a`）にこの構造が既に入っているので、LIBERO 対応は
 ゼロから作るのではなく**移植**になる。
 
+**実装（Phase 6）:**
+
+- 許可リスト（`capx/remote_env/server/tasks.py`）に、LIBERO の標準 5 suite（`libero_spatial` /
+  `libero_object` / `libero_goal` / `libero_10` / `libero_90`）の全 130 タスクを `<suite>_<番号>`
+  の名前で載せる。LIBERO-PRO の派生 suite（`*_with_mug` / `*_swap` / `*_ood` など）は含めない。
+- 設定ファイルはタスクごとに作らない。1 本の設定（`env_configs/libero/franka_libero_spatial_0.yaml`）
+  に、suite 名とタスク番号を **backend の許可リストの値で上書き**して worker に渡す
+  （`--override env.cfg.low_level.suite_name=... env.cfg.low_level.task_id=...`）。クライアントからは
+  受けない。途中のキーが無い上書きはエラーにする（打ち間違いで黙って新しいキーを作らない）。
+- image は `docker/worker/Dockerfile.libero`（`uv sync --extra libero`）。`.dockerignore` は
+  Dockerfile ごとなので別ファイル（`Dockerfile.libero.dockerignore`）。LIBERO は初回の import で
+  データの置き場所を対話で聞くので、ビルド時に設定ファイルを作っておく（`LIBERO_CONFIG_PATH=/app/.libero`）。
+  制限（非 root、read-only、oracle の除去）は robosuite 用と同じ。image 名は
+  `CAPX_WORKER_IMAGE_LIBERO`（既定 `capx-worker-libero:latest`）。
+- ゴール文 `{libero_environment_goal}` は `CodeExecutionEnvBase.reset()` で実際の文に置き換える
+  （`handle.task_language`）。`TaskSpec.instruction` にも実際の文が入る。旧来の
+  `_patch_libero_goal`（`capx/envs/trial.py`）は置き換え済みの文を見て何もしない。
+- 録画バッファは robosuite と同じ `FrameBufferMixin`（800×512 でも 900MB の上限と間引きが効く）。
+  カメラ名は `save_camera_name = "agentview"` / `render_camera_names = ["agentview"]`、手首は
+  `robot0_eye_in_hand`。
+
 ```python
 # workshop/backend/config.py
 TaskRuntime = Literal["robosuite", "libero"]

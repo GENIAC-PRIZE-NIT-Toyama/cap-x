@@ -1,0 +1,40 @@
+# docker/worker/Dockerfile.libero のビルドコンテキスト。
+# `libero` extra が要るものだけを入れる（Dockerfile.dockerignore の裏返し）。
+
+.git
+.github
+.z
+.venv
+.k
+outputs
+remote
+docker
+tests
+scripts
+docs
+node_modules
+
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+
+# `libero` extra が要らない vendor。
+# capx/third_party/LIBERO-PRO と capx/third_party/libero_dependencies は要る
+# （extra そのもの。LIBERO は自前の robosuite の fork を使う）。capx/third_party/sam3 も
+# 要る（`env` extra の依存で、`libero` extra が capx[env] を含む）。
+# 本家の capx/third_party/robosuite は要らない。
+capx/third_party/b1k
+capx/third_party/contact_graspnet_pytorch
+capx/third_party/robosuite
+capx/third_party/curobo
+capx/third_party/verl
+
+# oracle（正解コード）を runtime image に入れない。worker は capx.baselines を
+# import しない。タスクのクラスに埋まっている ORACLE_CODE は、Dockerfile の
+# ビルド中に取り除く。
+capx/baselines
+env_configs/human_oracle_code
