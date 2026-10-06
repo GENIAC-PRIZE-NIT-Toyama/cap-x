@@ -78,10 +78,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra libero
 
 # LIBERO は初回の import で、データの置き場所を対話で聞いてから設定ファイルを作る
-# （`libero/libero/__init__.py`）。実行時のコンテナは読み取り専用で、対話もできない。
+# （LIBERO-PRO の `libero/libero/__init__.py`。インストール後は `libero` という名前で
+# import される）。実行時のコンテナは読み取り専用で、対話もできない。
 # ビルド時に既定の場所（N）で作っておく。置き場所は HOME（実行時は /tmp）の外にする。
 ENV LIBERO_CONFIG_PATH=/app/.libero
-RUN echo n | .venv/bin/python -c "import libero.libero" \
+RUN echo n | .venv/bin/python -c "import libero" \
  && test -f /app/.libero/config.yaml
 
 # capx/integrations/motion/pyroki_context.py は Panda の URDF を

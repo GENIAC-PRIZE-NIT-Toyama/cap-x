@@ -118,7 +118,8 @@ def test_libero_image_differs_from_the_robosuite_one_only_where_it_must() -> Non
     libero = (REPO / "docker/worker/Dockerfile.libero").read_text(encoding="utf-8")
     assert "uv sync --frozen --no-dev --extra libero" in libero
     assert "--extra robosuite" not in libero
-    assert 'import libero.libero' in libero and "LIBERO_CONFIG_PATH=/app/.libero" in libero
+    # インストール後のパッケージ名は `libero`（`libero.libero` は無い）
+    assert 'python -c "import libero"' in libero and "LIBERO_CONFIG_PATH=/app/.libero" in libero
     assert "USER 10001:10001" in libero
     strip = lambda text: text.split("RUN python - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
     assert strip(libero) == strip(robosuite), "oracle の除去は同じ処理"
