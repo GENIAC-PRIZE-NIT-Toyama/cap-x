@@ -289,6 +289,13 @@ oracle ソースも worker runtime image から除く。生成コードがパッ
 プロセスを **worker が kill** する。worker 自体が止まったときの最後の手段が backend の
 寿命上限（`max_lifetime`、既定 2 時間）と、応答なしの回収。
 
+`trial_wall_clock_s` は、`step()` を呼ぶ時点で trial 開始（`reset`）からの経過を見て、
+超えていれば `BudgetExceeded("wall_clock")` にする（Local は `LocalAgentEnv`、Remote は
+worker 側で同じ判定。内訳は ZMQ のエラーに `reason` として載る）。`step` を呼ばずに
+止まっている Agent（LLM の応答待ちで固まるなど）はこの判定に届かない。その間、Remote では
+GPU マシン側の操作が途絶えるので、backend の idle 回収がコンテナを片付ける。手元の
+プロセスまで止めるには trial を別プロセスで動かす必要があり、今は行わない。
+
 ### リトライ
 
 | 種類 | 扱い |

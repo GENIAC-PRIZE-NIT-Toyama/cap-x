@@ -355,7 +355,7 @@ class RemoteAgentEnv:
         kind = reply.payload.get("failure_kind", "agent_error")
         message = reply.payload.get("message", "worker error")
         if kind == "budget":
-            raise BudgetExceeded("execution_budget", message)
+            raise BudgetExceeded(reply.payload.get("reason") or "execution_budget", message)
         if kind == "infrastructure":
             raise EnvUnavailable(message)
         raise RuntimeError(message)

@@ -158,16 +158,22 @@ STREAM_INTERVAL_S = 0.1
 STREAM_JPEG_QUALITY = 80
 
 
-def error(to: Message | None, message: str, kind: str = "agent_error") -> Message:
+def error(
+    to: Message | None, message: str, kind: str = "agent_error", reason: str | None = None
+) -> Message:
     """失敗を返す。`kind` は `capx.agent_api.FailureKind` に対応させる。
 
     クライアント側がこれを見て、リトライするか（infrastructure）
     しないか（budget）を決める。文字列判定にしないための区別。
+    `reason` は予算超過の内訳（`execution_budget` / `wall_clock` など）。
     """
+    payload: dict[str, Any] = {"message": message, "failure_kind": kind}
+    if reason:
+        payload["reason"] = reason
     return Message(
         kind="error",
         operation=to.operation if to else "unknown",
         request_id=to.request_id if to else "",
         session_id=to.session_id if to else "",
-        payload={"message": message, "failure_kind": kind},
+        payload=payload,
     )

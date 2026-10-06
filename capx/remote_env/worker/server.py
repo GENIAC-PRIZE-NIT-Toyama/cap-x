@@ -84,7 +84,9 @@ class WorkerServer:
                 reply = protocol.response(msg, **payload)
             except Exception as exc:
                 logger.exception("%s に失敗", msg.operation)
-                reply = protocol.error(msg, repr(exc), kind=_failure_kind(exc))
+                reply = protocol.error(
+                    msg, repr(exc), kind=_failure_kind(exc), reason=getattr(exc, "reason", None)
+                )
 
             self._done[msg.request_id] = reply
             while len(self._done) > DONE_CACHE_SIZE:
@@ -341,6 +343,7 @@ def main(
     session_id: str = "",
     record_video: bool = True,
     execution_time_s: float = 1000.0,
+    trial_wall_clock_s: float = 3000.0,
     max_steps: int = 10,
     frame_budget_mb: int = 900,
     isolate_policy: bool = True,
@@ -371,7 +374,11 @@ def main(
         code_env.set_process_executor(ProcessExecutor(step_timeout_s=execution_time_s))
     env = LocalAgentEnv(
         code_env,
-        budget=Budget(execution_time_s=execution_time_s, max_steps=max_steps),
+        budget=Budget(
+            execution_time_s=execution_time_s,
+            trial_wall_clock_s=trial_wall_clock_s,
+            max_steps=max_steps,
+        ),
         record_video=record_video,
         frame_budget_bytes=frame_budget_mb * 1024 * 1024,
         task_id=os.path.splitext(os.path.basename(config_path))[0],

@@ -97,6 +97,8 @@ class LocalAgentEnv:
         self._last_terminated = False
         self._last_truncated = False
         self._closed = False
+        # trial の開始時刻。`trial_wall_clock_s`（LLM 待ちも含む全体の上限）を測る。
+        self._trial_started = time.monotonic()
 
     # -- Bench 専用 --------------------------------------------------------
 
@@ -109,6 +111,7 @@ class LocalAgentEnv:
         """
         seed = trial if seed is None else seed
         obs, info = self._env.reset(options={"trial": trial}, seed=seed)
+        self._trial_started = time.monotonic()
 
         if self._record_video and hasattr(self._env, "enable_video_capture"):
             low = getattr(self._env, "low_level_env", None)
@@ -267,6 +270,15 @@ class LocalAgentEnv:
             raise BudgetExceeded(
                 "execution_budget",
                 f"実行時間が上限 {self._budget.execution_time_s}s に達した",
+            )
+        # trial 全体の時間（LLM 待ち・通信待ちを含む）。step を呼ぶ時点で見るので、
+        # LLM の応答待ちで止まったままの Agent は止められない。その間 GPU マシン側は
+        # 操作が途絶えるので、backend の idle 回収がコンテナを片付ける。
+        elapsed_s = time.monotonic() - self._trial_started
+        if elapsed_s >= self._budget.trial_wall_clock_s:
+            raise BudgetExceeded(
+                "wall_clock",
+                f"trial 全体の時間が上限 {self._budget.trial_wall_clock_s}s に達した",
             )
 
     def _frame_count(self) -> int:

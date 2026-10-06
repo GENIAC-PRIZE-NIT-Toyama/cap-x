@@ -168,3 +168,32 @@ def test_a_new_client_can_connect_after_the_first_one_leaves() -> None:
         assert second.reset_for_trial(2, 2).seed == 2
     finally:
         server._stop.set()
+
+
+def test_the_trial_wall_clock_stops_the_next_step_locally_and_remotely() -> None:
+    """LLM 待ちを含む trial 全体の時間が上限を超えたら、次の step で止める。"""
+    from capx.agent_api import Budget, BudgetExceeded
+
+    budget = Budget(trial_wall_clock_s=0.5)
+
+    local = LocalAgentEnv(FakeCodeEnv(), budget=budget, task_id="fake")
+    local.reset_for_trial(1, 1)
+    local.step("move()")
+    time.sleep(0.6)  # LLM を待っているつもり
+    with pytest.raises(BudgetExceeded) as exc:
+        local.step("move()")
+    assert exc.value.reason == "wall_clock"
+
+    served = LocalAgentEnv(FakeCodeEnv(), budget=budget, task_id="fake")
+    server, port = _serve(served)
+    remote = RemoteAgentEnv(endpoint=f"tcp://127.0.0.1:{port}", session_id="s")
+    try:
+        remote.reset_for_trial(1, 1)
+        remote.step("move()")
+        time.sleep(0.6)
+        with pytest.raises(BudgetExceeded) as exc:
+            remote.step("move()")
+        assert exc.value.reason == "wall_clock", "Remote でも予算超過の内訳が届く"
+    finally:
+        remote.close()
+        server._stop.set()
