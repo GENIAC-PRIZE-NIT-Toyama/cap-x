@@ -81,6 +81,12 @@ ENV ROBOT_DESCRIPTIONS_CACHE=/app/.cache/robot_descriptions
 RUN .venv/bin/python -c "from robot_descriptions.loaders.yourdfpy import load_robot_description; load_robot_description('panda_description')" \
  && test -d /app/.cache/robot_descriptions/example-robot-data
 
+# 実行時の worker は非 root（10001）で動くが、上の clone は root の持ち物になる。git は
+# 他のユーザーが持ち主のリポジトリを「dubious ownership」として読まず、robot_descriptions が
+# commit を確かめるところで失敗する（LIBERO の API は起動時に URDF を読む）。読むだけなので、
+# このリポジトリを safe.directory に入れる。HOME は実行時に /tmp になるので、system 設定に置く。
+RUN git config --system --add safe.directory /app/.cache/robot_descriptions/example-robot-data
+
 # 設定やキャッシュを書くライブラリ（mujoco、fontconfig、matplotlib、robosuite の
 # private macros）が、イメージの書き込み層ではなく tmpfs に書くようにする。
 ENV PATH="/app/.venv/bin:${PATH}" \

@@ -158,3 +158,13 @@ def test_task_lists_are_summarized_by_range() -> None:
     assert "cube_stack" in text
     assert "libero_object_3" not in text, "範囲にまとめる"
     assert tasks.summarize(["a_1", "a_3"]) == "a_1, a_3", "飛び番は並べる"
+
+
+def test_both_images_let_the_non_root_worker_read_the_urdf_cache() -> None:
+    """キャッシュは root が clone し、worker は 10001 で動く。git に読ませる設定が要る。"""
+    for name in ("Dockerfile", "Dockerfile.libero"):
+        text = (REPO / "docker/worker" / name).read_text(encoding="utf-8")
+        assert (
+            "git config --system --add safe.directory "
+            "/app/.cache/robot_descriptions/example-robot-data"
+        ) in text, name
