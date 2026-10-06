@@ -141,6 +141,8 @@ class SessionManager:
             owner=owner,
             image=IMAGES[entry.runtime],
             config_path=entry.config_path,
+            task_id=task_id,
+            overrides=entry.overrides,
             host_port=port,
             gpu_device=next(self._gpus),
             secrets={

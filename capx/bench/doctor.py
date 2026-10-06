@@ -82,7 +82,9 @@ def check_server(server_url: str | None) -> list[Check]:
         tasks.raise_for_status()
         names = tasks.json().get("tasks", [])
         checks.append(Check("認証", True, "通った"))
-        checks.append(Check("選べるタスク", True, ", ".join(names)))
+        from capx.remote_env.server.tasks import summarize
+
+        checks.append(Check("選べるタスク", True, summarize(names)))
     except Exception as exc:
         checks.append(Check("認証", False, f"確認できない（{exc}）"))
         return checks

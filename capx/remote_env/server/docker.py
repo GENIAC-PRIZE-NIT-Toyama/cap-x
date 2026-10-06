@@ -64,6 +64,10 @@ class RunSpec:
     limits: Limits = field(default_factory=Limits)
     #: 秘密鍵などをここに入れる。argv ではなく環境変数で渡す（`ps` に出ない）。
     secrets: dict[str, str] = field(default_factory=dict)
+    #: 許可リスト上のタスク名。結果に残す名前になる。
+    task_id: str = ""
+    #: config への上書き（許可リストが決めた値だけ）。
+    overrides: tuple[tuple[str, str], ...] = ()
 
     @property
     def container_name(self) -> str:
@@ -140,6 +144,10 @@ def run_command(spec: RunSpec) -> list[str]:
         "--host", "0.0.0.0",
         "--session-id", spec.session_id,
     ]
+    if spec.task_id:
+        cmd += ["--task-id", spec.task_id]
+    if spec.overrides:
+        cmd += ["--override", *(f"{key}={value}" for key, value in spec.overrides)]
     return cmd
 
 

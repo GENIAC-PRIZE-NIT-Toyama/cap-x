@@ -315,6 +315,29 @@ class WorkerServer:
         return None
 
 
+def apply_overrides(config: Any, overrides: tuple[str, ...] | list[str]) -> None:
+    """`a.b.c=value` の形で config を上書きする。値は YAML として読む（`3` は数値）。
+
+    途中のキーが無ければエラーにする。打ち間違いを、黙って新しいキーを作って
+    見逃さないため。
+    """
+    import yaml
+
+    for item in overrides:
+        path, sep, raw = item.partition("=")
+        if not sep or not path:
+            raise ValueError(f"上書きの形が違う（key=value）: {item!r}")
+        *parents, last = path.split(".")
+        node = config
+        for key in parents:
+            if key not in node:
+                raise KeyError(f"config に {path!r} の途中のキー {key!r} が無い")
+            node = node[key]
+        if last not in node:
+            raise KeyError(f"config に {path!r} が無い")
+        node[last] = yaml.safe_load(raw)
+
+
 def _encode_jpeg(frame: Any, quality: int) -> bytes:
     import io
 
@@ -347,12 +370,19 @@ def main(
     max_steps: int = 10,
     frame_budget_mb: int = 900,
     isolate_policy: bool = True,
+    task_id: str = "",
+    override: tuple[str, ...] = (),
 ) -> None:
     """worker を起動する。環境を作り終えてから listen する。
 
     構築（robosuite / MuJoCo / EGL の初期化）を listen より前に済ませるので、
     接続を受け付けた時点で必ず使える。backend の readiness 判定は
     「繋がるか」だけでよくなる。
+
+    Args:
+        task_id: 許可リスト上のタスク名。省略すると config のファイル名。
+        override: config への上書き `env.cfg.low_level.task_id=3` の形。backend が
+            許可リストの値を渡す（LIBERO は 1 本の設定を suite と番号だけ変えて使う）。
     """
     from capx.agent_api import Budget
     from capx.envs.configs.instantiate import instantiate
@@ -362,6 +392,7 @@ def main(
     configs_dict = DictLoader.load([os.path.expanduser(config_path)])
     if "env" not in configs_dict:
         raise ValueError(f"{config_path} に `env` がない")
+    apply_overrides(configs_dict, override)
 
     logger.info("building env from %s ...", config_path)
     code_env = instantiate(configs_dict["env"])
@@ -381,7 +412,7 @@ def main(
         ),
         record_video=record_video,
         frame_budget_bytes=frame_budget_mb * 1024 * 1024,
-        task_id=os.path.splitext(os.path.basename(config_path))[0],
+        task_id=task_id or os.path.splitext(os.path.basename(config_path))[0],
     )
     logger.info("env ready")
 
