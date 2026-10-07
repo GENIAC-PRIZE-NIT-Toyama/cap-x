@@ -189,7 +189,8 @@ worker 側は ZAP authenticator で登録済み公開鍵だけを許可する。
 フェースにしてデフォルトルートを持たせないため。ただし **`0.0.0.0` 公開構成での
 再検証が必要**（workshop の "verified on this host" は `127.0.0.1` 公開での検証）。
 
-SAM3 / GraspNet / PyRoKi は `192.168.0.200` の 8114 / 8115 / 8116。コンテナはルートを
+SAM3 / GraspNet / PyRoKi は `192.168.0.200` の 8114 / 8115 / 8116。Molmo2（物体を指し示す VLM。
+LIBERO の API が、SAM3 で見つからなかったときの予備に使う）は `10.93.33.1:8000`。コンテナはルートを
 持たないので、固定宛先の `perception-proxy-*`（socat）をそのセッションのネットワークに
 繋いで到達させる。`*_SERVICE_URL` は backend が `docker run` の `-e` で proxy 宛に
 書き換えて注入するので、**参加者はこれらを設定しない**。
@@ -199,7 +200,7 @@ GPU は `--runtime nvidia`（`--gpus` ではない）。
 ### コンテナ制限
 
 ```
---memory 4g  --cpus 2  --pids-limit 512
+--memory 4g  --cpus 2  --pids-limit 4096
 --cap-drop ALL  --security-opt no-new-privileges
 --read-only  --tmpfs /tmp:rw,size=1g  --tmpfs /run:rw,size=16m
 --user 10001:10001  --ulimit nofile=4096:4096  --ulimit core=0
@@ -215,6 +216,9 @@ GPU は `--runtime nvidia`（`--gpus` ではない）。
   `unconfined` にしていないことをテストで押さえている。
 - **image は digest で固定できる。** backend の環境変数 `CAPX_WORKER_IMAGE=capx-worker@sha256:...`。
   未設定なら `capx-worker:latest`。
+- **pids の上限は 4096、数値計算ライブラリのスレッド数は CPU 数（2）に揃える**
+  （`OMP_NUM_THREADS` など）。pids はスレッドも数える。LIBERO の API は JAX で IK を解き、
+  JAX はホストのコア数（64）に合わせてスレッドを作るので、512 では `pthread_create failed` で落ちた。
 - **stdout / stderr は 1 step あたり `Budget.max_output_bytes`（既定 64KB）まで。** 超えた分は
   切り捨てる。コードは `max_code_bytes`（64KB）。
 - **oracle は image に入れない。** `.dockerignore` で `capx/baselines` と
