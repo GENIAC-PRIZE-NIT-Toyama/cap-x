@@ -1,9 +1,9 @@
 # 知覚 API への固定宛先の中継（socat）。
 #
 # worker コンテナは --internal ネットワークに居て、外へ出るルートを持たない。
-# SAM3 / GraspNet / PyRoKi へは、このコンテナをセッションのネットワークに繋いで
+# SAM3 / GraspNet / PyRoKi / Molmo へは、このコンテナをセッションのネットワークに繋いで
 # 届かせる（backend が session ごとに繋ぐ）。宛先が固定なので、生成コードが何を
-# 書いても、コンテナから届くのはこの 3 つだけ。
+# 書いても、コンテナから届くのはこの 4 つだけ。
 #
 # 使い方（このディレクトリで）:
 #   cp .env.example .env    # 知覚 API の実際の宛先を書く
@@ -27,4 +27,11 @@ services:
     image: alpine/socat
     container_name: capx-proxy-pyroki
     command: ["tcp-listen:8116,fork,reuseaddr", "tcp:${PYROKI_UPSTREAM:?set PYROKI_UPSTREAM in .env}"]
+    restart: unless-stopped
+
+  # 物体を指し示す VLM（Molmo2）。LIBERO の API が SAM3 の予備として使う。
+  proxy-molmo:
+    image: alpine/socat
+    container_name: capx-proxy-molmo
+    command: ["tcp-listen:8122,fork,reuseaddr", "tcp:${MOLMO_UPSTREAM:?set MOLMO_UPSTREAM in .env}"]
     restart: unless-stopped

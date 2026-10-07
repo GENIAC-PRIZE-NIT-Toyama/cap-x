@@ -197,3 +197,44 @@ def test_the_trial_wall_clock_stops_the_next_step_locally_and_remotely() -> None
     finally:
         remote.close()
         server._stop.set()
+
+
+def test_a_worker_that_never_answers_is_detected_even_if_sends_succeed(monkeypatch) -> None:
+    """接続は受け付けるが返事をしない相手（SSH 転送の先で worker が落ちた状態）を検出する。
+
+    送れたかどうかだけを見ていると、転送口が受け付けてしまうので、落ちたことに気づけない。
+    返事が来ない時間で判断する。
+    """
+    import socket as socket_mod
+
+    from capx.remote_env import client as client_mod
+
+    monkeypatch.setattr(client_mod, "HEARTBEAT_INTERVAL_S", 0.2)
+    monkeypatch.setattr(client_mod, "HEARTBEAT_FAILURES_ALLOWED", 2)
+
+    listener = socket_mod.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+    held: list = []
+
+    def accept_and_ignore() -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            held.append(conn)  # 受け付けるだけで、何も返さない
+
+    threading.Thread(target=accept_and_ignore, daemon=True).start()
+    remote = RemoteAgentEnv(endpoint=f"tcp://127.0.0.1:{port}", session_id="s", timeout_s=30)
+    started = time.monotonic()
+    try:
+        with pytest.raises(EnvUnavailable, match="返事が無い"):
+            remote.reset_for_trial(1, 1)
+    finally:
+        remote.close()
+        listener.close()
+        for conn in held:
+            conn.close()
+    assert time.monotonic() - started < 5, "timeout（30 秒）を待たずに気づく"

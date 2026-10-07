@@ -17,7 +17,9 @@ _PROC: Any | None = None  # kept for backward compatibility; unused with vLLM HT
 _MODEL: Any | None = None  # kept for backward compatibility; unused with vLLM HTTP API
 
 # SERVICE_URL = "https://openrouter.ai/api/" # OpenRouter
-SERVICE_URL = "http://127.0.0.1:8122/v1"  # local
+# remote の worker では backend が中継（capx-proxy-molmo）の宛先を渡す。
+SERVICE_URL = os.environ.get("MOLMO_SERVICE_URL", "http://127.0.0.1:8122/v1")  # local
+DEFAULT_MODEL = os.environ.get("MOLMO_MODEL", "allenai/Molmo2-8B")
 
 
 
@@ -142,7 +144,7 @@ def _image_to_data_url(image: PIL.Image.Image) -> str:
 def init_molmo(
     # model_name: str = "allenai/moldmo-2-8b:free", # OpenRouter
     # model_name: str = "allenai/Molmo2-O-7B",
-    model_name: str = "allenai/Molmo2-8B",
+    model_name: str = DEFAULT_MODEL,
     base_url: str = SERVICE_URL,
     api_key: str | None = None,
 ) -> Callable[[PIL.Image.Image, list[str] | None], dict[str, tuple[int | None, int | None]]]:
