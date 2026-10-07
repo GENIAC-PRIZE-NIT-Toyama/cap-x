@@ -15,8 +15,7 @@ import uvicorn
 from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import Response
 
 from capx.envs.configs.instantiate import instantiate
 from capx.utils.launch_utils import _load_config
@@ -154,8 +153,6 @@ def create_app() -> FastAPI:
                 use_video_differencing: bool | None = None
                 use_wrist_camera: bool | None = None
                 use_multimodel: bool | None = None
-                web_ui: bool | None = None
-                web_ui_port: int | None = None
 
             args = MinimalArgs(config_path=config_path)
             env_factory, config, _ = await asyncio.to_thread(_load_config, args)
@@ -219,8 +216,6 @@ def create_app() -> FastAPI:
                 use_video_differencing: bool | None = None
                 use_wrist_camera: bool | None = None
                 use_multimodel: bool | None = None
-                web_ui: bool | None = None
-                web_ui_port: int | None = None
 
             load_args = LoadArgs(
                 config_path=config_path,
@@ -549,26 +544,6 @@ def create_app() -> FastAPI:
                 pass
 
     # ========================================================================
-    # Static file serving for frontend (production)
-    # ========================================================================
-
-    # Check if built frontend exists
-    frontend_dist = Path(__file__).parent.parent.parent / "web-ui" / "dist"
-    if frontend_dist.exists():
-        app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="assets")
-
-        @app.get("/")
-        async def serve_frontend():
-            return FileResponse(frontend_dist / "index.html")
-
-        @app.get("/{path:path}")
-        async def serve_frontend_routes(path: str):
-            # Try to serve static file, otherwise serve index.html for SPA routing
-            file_path = frontend_dist / path
-            if file_path.exists() and file_path.is_file():
-                return FileResponse(file_path)
-            return FileResponse(frontend_dist / "index.html")
-
     return app
 
 

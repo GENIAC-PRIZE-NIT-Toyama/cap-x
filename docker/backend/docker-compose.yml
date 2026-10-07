@@ -1,0 +1,30 @@
+# 知覚 API への固定宛先の中継（socat）。
+#
+# worker コンテナは --internal ネットワークに居て、外へ出るルートを持たない。
+# SAM3 / GraspNet / PyRoKi へは、このコンテナをセッションのネットワークに繋いで
+# 届かせる（backend が session ごとに繋ぐ）。宛先が固定なので、生成コードが何を
+# 書いても、コンテナから届くのはこの 3 つだけ。
+#
+# 使い方（このディレクトリで）:
+#   cp .env.example .env    # 知覚 API の実際の宛先を書く
+#   docker compose up -d
+#
+# 名前は capx.remote_env.server.docker.PROXIES と一致させること。
+services:
+  proxy-sam3:
+    image: alpine/socat
+    container_name: capx-proxy-sam3
+    command: ["tcp-listen:8114,fork,reuseaddr", "tcp:${SAM3_UPSTREAM:?set SAM3_UPSTREAM in .env}"]
+    restart: unless-stopped
+
+  proxy-graspnet:
+    image: alpine/socat
+    container_name: capx-proxy-graspnet
+    command: ["tcp-listen:8115,fork,reuseaddr", "tcp:${GRASPNET_UPSTREAM:?set GRASPNET_UPSTREAM in .env}"]
+    restart: unless-stopped
+
+  proxy-pyroki:
+    image: alpine/socat
+    container_name: capx-proxy-pyroki
+    command: ["tcp-listen:8116,fork,reuseaddr", "tcp:${PYROKI_UPSTREAM:?set PYROKI_UPSTREAM in .env}"]
+    restart: unless-stopped

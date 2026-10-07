@@ -14,14 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import fastapi
 import numpy as np
 import requests
-import uvicorn
 from PIL import Image
 
-from capx.envs.configs.instantiate import instantiate
-from capx.envs.configs.loader import DictLoader
+# capx.envs は import 時に simulator を登録するため、module 冒頭では引かない。
+# この module の prompt / コード抽出ヘルパーは Gym を必要とせず、手元PC の
+# 軽量インストール（remote/）からも使う。Gym を要る関数の中で遅延 import する。
 
 # Re-export LLM client symbols for backward compatibility
 from capx.llm.client import (  # noqa: F401
@@ -56,10 +55,14 @@ class TrialSummary:
     num_regenerations: int = 0
     num_finishes: int = 0
     num_code_blocks: int = 0
+    #: `capx.bench.schema.TrialResult`（Bench 経由のときだけ入る）
+    result: Any = None
 
 
 def run_server_proc(api_cfg) -> multiprocessing.Process:
     # Make sure we use spawn for CUDA
+    from capx.envs.configs.instantiate import instantiate
+
     ctx = multiprocessing.get_context("spawn")
     proc = ctx.Process(
         target=instantiate,  # child will call main(**cfg) via Hydra-style instantiate
@@ -82,6 +85,8 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
         - merged_config_dict: Execution config with CLI overrides applied
     """
     config_path = os.path.expanduser(args.config_path)
+    from capx.envs.configs.loader import DictLoader
+
     configs_dict = DictLoader.load([config_path])
 
     # Extract environment factory (don't instantiate yet - that happens per worker)
@@ -144,12 +149,6 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
         "use_multimodel": args.use_multimodel
         if args.use_multimodel is not None
         else configs_dict.get("use_multimodel", False),
-        "web_ui": getattr(args, "web_ui", None)
-        if getattr(args, "web_ui", None) is not None
-        else configs_dict.get("web_ui", False),
-        "web_ui_port": getattr(args, "web_ui_port", None)
-        if getattr(args, "web_ui_port", None) is not None
-        else configs_dict.get("web_ui_port", 8200),
         "save_multiturn_prompts": configs_dict.get("save_multiturn_prompts", False),
     }
 
@@ -527,9 +526,9 @@ def _print_and_save_summary(
     print(f"Config Path: {args.config_path}")
     print(f"Git Commit: {git_commit} (Dirty: {is_dirty})")
     print(f"Total number of trials: {executed_trials}")
-    print(
-        f"Code generation success rate / Average reward / Task completed: \n{success_rate:.3f}/{average_reward:.3f}/{task_completed_count}"
-    )
+    print(f"task_completion_rate: {task_completed_count / executed_trials:.3f} ({task_completed_count}/{executed_trials})")
+    print(f"Average reward: {average_reward:.3f}")
+    print(f"exec_ok_rate (last step ran without error, not task success): {success_rate:.3f}")
     print(f"Average code blocks: {average_code_blocks:.3f}")
     print(f"Average regenerations: {average_regenerations:.3f}")
     print(f"Average finishes: {average_finishes:.3f}")
@@ -545,9 +544,9 @@ def _print_and_save_summary(
             f.write(f"Config Path: {args.config_path}\n")
             f.write(f"Git Commit: {git_commit} (Dirty: {is_dirty})\n")
             f.write(f"Total number of trials: {executed_trials}\n")
-            f.write(
-                f"Code generation success rate / Average reward / Task completed: \n{success_rate:.3f}/{average_reward:.3f}/{task_completed_count}\n"
-            )
+            f.write(f"task_completion_rate: {task_completed_count / executed_trials:.3f} ({task_completed_count}/{executed_trials})\n")
+            f.write(f"Average reward: {average_reward:.3f}\n")
+            f.write(f"exec_ok_rate (last step ran without error, not task success): {success_rate:.3f}\n")
             f.write(f"Average code blocks: {average_code_blocks:.3f}\n")
             f.write(f"Average regenerations: {average_regenerations:.3f}\n")
             f.write(f"Average finishes: {average_finishes:.3f}\n")

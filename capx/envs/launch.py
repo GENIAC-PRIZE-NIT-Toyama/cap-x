@@ -8,7 +8,6 @@ Usage::
 Execution flow::
 
     main()
-      ├─ _run_web_ui()            (interactive browser mode)
       └─ _run_headless_trials()   (CLI batch mode)  [in capx.envs.runner]
            ├─ _run_trial_batch()  (sequential)
            └─ run_parallel_*()    (multi-worker)
@@ -119,86 +118,6 @@ class LaunchArgs:
     use_multimodel: bool | None = None
     """Whether to use multimodel for parallel ensembling."""
 
-    # Web UI configuration
-    web_ui: bool | None = None
-    """Launch the interactive web UI instead of running trials in headless CLI mode."""
-
-    web_ui_port: int | None = None
-    """Port for the web UI server (default 8200)."""
-
-
-# ---------------------------------------------------------------------------
-# Web UI
-# ---------------------------------------------------------------------------
-
-def _ensure_frontend_built() -> None:
-    """Auto-build the web-ui frontend if ``dist/`` is missing or stale."""
-    import shutil
-    import subprocess
-    import sys
-
-    project_root = Path(__file__).resolve().parent.parent.parent
-    webui_dir = project_root / "web-ui"
-    dist_dir = webui_dir / "dist"
-
-    if not webui_dir.exists():
-        print("[web-ui] web-ui/ directory not found — skipping frontend build")
-        return
-
-    needs_build = not dist_dir.exists()
-    if not needs_build:
-        dist_mtime = (dist_dir / "index.html").stat().st_mtime if (dist_dir / "index.html").exists() else 0
-        for src_file in (webui_dir / "src").rglob("*"):
-            if src_file.is_file() and src_file.stat().st_mtime > dist_mtime:
-                needs_build = True
-                break
-        pkg_json = webui_dir / "package.json"
-        if pkg_json.exists() and pkg_json.stat().st_mtime > dist_mtime:
-            needs_build = True
-
-    if not needs_build:
-        return
-
-    print("[web-ui] Building frontend...")
-    nodeenv_dir = Path.home() / ".capx_nodeenv"
-    npm_bin = nodeenv_dir / "bin" / "npm"
-    node_bin = nodeenv_dir / "bin" / "node"
-
-    if not node_bin.exists():
-        nodeenv_bin = shutil.which("nodeenv")
-        if nodeenv_bin is None:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "-q", "nodeenv"])
-            nodeenv_bin = shutil.which("nodeenv")
-            if nodeenv_bin is None:
-                raise RuntimeError("Could not install nodeenv. Install Node.js manually.")
-        nodeenv_cmd = [nodeenv_bin, "--prebuilt", "--node=20.18.1"]
-        # nodeenv exits with code 2 if the target directory already exists,
-        # which can happen after an interrupted install.
-        if nodeenv_dir.exists():
-            nodeenv_cmd.append("--force")
-        subprocess.check_call([*nodeenv_cmd, str(nodeenv_dir)])
-
-    env = {**os.environ, "PATH": f"{nodeenv_dir / 'bin'}:{os.environ.get('PATH', '')}"}
-    node_modules = webui_dir / "node_modules"
-    pkg_json = webui_dir / "package.json"
-    if not node_modules.exists() or (pkg_json.exists() and pkg_json.stat().st_mtime > node_modules.stat().st_mtime):
-        subprocess.check_call([str(npm_bin), "install"], cwd=webui_dir, env=env)
-    subprocess.check_call([str(npm_bin), "run", "build"], cwd=webui_dir, env=env)
-    print("[web-ui] Frontend build complete")
-
-
-def _run_web_ui(args: LaunchArgs, config: dict[str, Any]) -> None:
-    """Start the interactive web UI server."""
-    import uvicorn
-    from capx.web.server import create_app
-
-    _ensure_frontend_built()
-    port = int(config.get("web_ui_port", 8200))
-    app = create_app()
-    app.state.default_config_path = args.config_path
-    print(f"\n  CaP-X Interactive Web UI: http://localhost:{port}\n")
-    uvicorn.run(app, host="0.0.0.0", port=port)
-
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -213,10 +132,7 @@ def main(args: LaunchArgs) -> None:
     server_procs = _start_api_servers(api_servers)
 
     try:
-        if config.get("web_ui", False):
-            _run_web_ui(args, config)
-        else:
-            _run_headless_trials(args, env_factory, config, start_time)
+        _run_headless_trials(args, env_factory, config, start_time)
     finally:
         try:
             _stop_api_servers(server_procs)
