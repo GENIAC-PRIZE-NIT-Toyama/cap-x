@@ -39,7 +39,14 @@ def test_resources_are_capped() -> None:
     cmd = d.run_command(_spec())
     assert _flag_values(cmd, "--memory") == ["4g"]
     assert _flag_values(cmd, "--cpus") == ["2"]
-    assert _flag_values(cmd, "--pids-limit") == ["512"]
+    assert _flag_values(cmd, "--pids-limit") == ["4096"]
+
+
+def test_thread_pools_match_the_allotted_cpus() -> None:
+    """数値計算ライブラリがホストのコア数ぶんスレッドを作らないようにする。"""
+    envs = _flag_values(d.run_command(_spec()), "-e")
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        assert f"{var}=2" in envs
 
 
 def test_primary_network_is_the_internal_one() -> None:
@@ -82,12 +89,13 @@ def test_perception_urls_point_at_the_proxies() -> None:
     assert "SAM3_SERVICE_URL=http://capx-proxy-sam3:8114" in envs
     assert "GRASPNET_SERVICE_URL=http://capx-proxy-graspnet:8115" in envs
     assert "PYROKI_SERVICE_URL=http://capx-proxy-pyroki:8116" in envs
+    assert "MOLMO_SERVICE_URL=http://capx-proxy-molmo:8122/v1" in envs
 
 
 def test_proxies_are_connected_to_the_session_network() -> None:
     spec = _spec()
     connects = d.proxy_connect_commands(spec)
-    assert len(connects) == 3
+    assert len(connects) == len(d.PROXIES) == 4
     assert all(c[-2] == spec.network_name for c in connects)
 
 

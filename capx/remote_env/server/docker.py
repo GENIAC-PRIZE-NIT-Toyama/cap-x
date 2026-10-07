@@ -34,7 +34,12 @@ PROXIES: dict[str, tuple[str, int]] = {
     "SAM3_SERVICE_URL": ("capx-proxy-sam3", 8114),
     "GRASPNET_SERVICE_URL": ("capx-proxy-graspnet", 8115),
     "PYROKI_SERVICE_URL": ("capx-proxy-pyroki", 8116),
+    # 物体を指し示す VLM。LIBERO の API が、SAM3 で見つからなかったときの予備に使う。
+    "MOLMO_SERVICE_URL": ("capx-proxy-molmo", 8122),
 }
+
+#: URL の末尾に付ける path（OpenAI 互換のサーバは /v1 まで含めて渡す）。
+PROXY_PATHS: dict[str, str] = {"MOLMO_SERVICE_URL": "/v1"}
 
 LABEL_MANAGED = "capx.managed"
 LABEL_SESSION = "capx.session"
@@ -45,7 +50,10 @@ LABEL_OWNER = "capx.owner"
 class Limits:
     memory: str = "4g"
     cpus: str = "2"
-    pids: int = 512
+    #: プロセスとスレッドの合計の上限（cgroup の pids はスレッドも数える）。LIBERO の API は
+    #: JAX で IK を解き、JAX はホストのコア数（GPU マシンは 64）に合わせてスレッドを作る。
+    #: 512 では足りず `pthread_create failed` で落ちた。fork 爆弾を止める目的は 4096 でも保てる。
+    pids: int = 4096
     tmpfs: str = "/tmp:rw,size=1g"
     run_tmpfs: str = "/run:rw,size=16m"
     nofile: int = 4096
@@ -114,6 +122,11 @@ def run_command(spec: RunSpec) -> list[str]:
         "--pids-limit", str(spec.limits.pids),
         "--memory", spec.limits.memory,
         "--cpus", spec.limits.cpus,
+        # 数値計算ライブラリのスレッド数を、割り当てた CPU 数に揃える。指定しないと
+        # ホストのコア数（64）ぶん作り、2 CPU を取り合ううえ、pids の上限にも近づく。
+        "-e", f"OMP_NUM_THREADS={spec.limits.cpus}",
+        "-e", f"MKL_NUM_THREADS={spec.limits.cpus}",
+        "-e", f"OPENBLAS_NUM_THREADS={spec.limits.cpus}",
         "--tmpfs", spec.limits.tmpfs,
         # 書けるのは tmpfs（/tmp と /run）だけ。イメージの中は書き換えられない。
         "--read-only",
@@ -132,7 +145,7 @@ def run_command(spec: RunSpec) -> list[str]:
 
     # 知覚 API は proxy 経由に書き換えて渡す。参加者はこれらを設定しない。
     for env_var, (name, port) in PROXIES.items():
-        cmd += ["-e", f"{env_var}=http://{name}:{port}"]
+        cmd += ["-e", f"{env_var}=http://{name}:{port}{PROXY_PATHS.get(env_var, '')}"]
 
     for key, value in spec.secrets.items():
         cmd += ["-e", f"{key}={value}"]
