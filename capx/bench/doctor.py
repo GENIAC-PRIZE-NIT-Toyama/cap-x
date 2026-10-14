@@ -93,11 +93,14 @@ def check_server(server_url: str | None) -> list[Check]:
         occupancy = _get(f"{base}/sessions", headers).json()
         active, capacity = occupancy["active"], occupancy["capacity"]
         free = capacity - active
+        memory = ""
+        if "memory_used_gb" in occupancy:
+            memory = f"、メモリ {occupancy['memory_used_gb']}/{occupancy['memory_budget_gb']}GB 使用中"
         checks.append(
             Check(
                 "セッションの空き",
                 free > 0,
-                f"{active}/{capacity} 使用中",
+                f"{active}/{capacity} 使用中{memory}",
                 "" if free > 0 else "満員。少し待ってから実行する",
             )
         )

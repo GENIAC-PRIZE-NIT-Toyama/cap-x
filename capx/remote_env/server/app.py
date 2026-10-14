@@ -166,9 +166,12 @@ def create_app(
     async def occupancy(_owner: str = Depends(owner_of)) -> dict:
         # id は返さない。認証なしだと全員が同じ持ち主になるので、一覧に id を
         # 出すと、他人のセッションを消せてしまう。id は作った本人だけが知る。
+        gib = 1024**3
         return {
             "active": len(manager.list()),
             "capacity": manager.config.max_sessions,
+            "memory_used_gb": round(manager.reserved_memory_bytes() / gib, 1),
+            "memory_budget_gb": round(manager.config.memory_budget_bytes / gib, 1),
         }
 
     return app

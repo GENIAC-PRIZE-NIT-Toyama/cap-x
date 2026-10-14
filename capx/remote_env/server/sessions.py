@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from itertools import cycle
 
 from capx.remote_env.server import docker as dk
-from capx.remote_env.server.tasks import IMAGES, resolve
+from capx.remote_env.server.tasks import IMAGES, limits_for, resolve
 
 logger = logging.getLogger("capx.server")
 
@@ -83,7 +83,12 @@ class Config:
     port_start: int = 19500
     port_end: int = 19600
     max_sessions: int = 20
-    """同時セッション数の上限。× 4GB が GPU マシンの RAM を超えないこと。"""
+    """同時セッション数の上限。メモリの合計（`memory_budget_bytes`）とは別に効く。"""
+
+    memory_budget_bytes: int = 100 * 1024**3
+    """全セッションに貸すメモリの合計の上限。各セッションの上限（タスクの種類ごと。
+    robosuite 4GB、LIBERO 8GB）を足して、これを超えるなら新しいセッションを断る。
+    GPU マシンの RAM から、OS・backend・中継などの分を残した値にする。"""
 
     idle_ttl_s: float = 20 * 60
     max_lifetime_s: float = 2 * 60 * 60
@@ -126,17 +131,19 @@ class SessionManager:
         # Ctrl-C の残りは trial.py の finally が返し、それでも残った分
         # （強制終了・PC のスリープ）は idle 回収が拾う。
 
-        if len(self._sessions) >= self.config.max_sessions:
-            raise SessionError(
-                f"同時セッションが上限（{self.config.max_sessions}）。"
-                "誰かが終わるまで待って再度試す",
-                429,
-            )
-
         import zmq
 
+        limits = limits_for(entry.runtime)
         server_public, server_secret = zmq.curve_keypair()
         port = await self._ports.acquire()
+
+        # ここから登録まで await を挟まない。挟むと、同時に来た別の作成が同じ空きを
+        # 見て、数やメモリの上限を超えて受け付けてしまう。
+        rejection = self._admission_error(dk.memory_bytes(limits.memory))
+        if rejection is not None:
+            await self._ports.release(port)
+            raise rejection
+
         session_id = secrets.token_hex(6)
         spec = dk.RunSpec(
             session_id=session_id,
@@ -148,6 +155,7 @@ class SessionManager:
             env=dict(self.config.worker_env),
             host_port=port,
             gpu_device=next(self._gpus),
+            limits=limits,
             secrets={
                 "CAPX_CURVE_SERVER_SECRET": server_secret.decode("ascii"),
                 # クライアントの鍵に加え、backend 自身の生存確認用の鍵も許可する
@@ -173,6 +181,29 @@ class SessionManager:
             raise
         logger.info("session %s ready (owner=%s task=%s port=%d)", session_id, owner, task_id, port)
         return session
+
+    def reserved_memory_bytes(self) -> int:
+        """使用中のセッションに貸しているメモリの合計（各セッションの上限の和）。"""
+        return sum(dk.memory_bytes(s.spec.limits.memory) for s in self._sessions.values())
+
+    def _admission_error(self, need_bytes: int) -> SessionError | None:
+        """新しいセッションを受けられないなら、その理由を返す。"""
+        if len(self._sessions) >= self.config.max_sessions:
+            return SessionError(
+                f"同時セッションが上限（{self.config.max_sessions}）。"
+                "誰かが終わるまで待って再度試す",
+                429,
+            )
+        used = self.reserved_memory_bytes()
+        if used + need_bytes > self.config.memory_budget_bytes:
+            gib = 1024**3
+            return SessionError(
+                f"GPU マシンのメモリの空きが足りない（使用中 {used / gib:.0f}GB、"
+                f"このタスクに {need_bytes / gib:.0f}GB 要る、合計の上限 "
+                f"{self.config.memory_budget_bytes / gib:.0f}GB）。誰かが終わるまで待って再度試す",
+                429,
+            )
+        return None
 
     async def _start(self, spec: dk.RunSpec) -> None:
         await self._ensure_io_network()

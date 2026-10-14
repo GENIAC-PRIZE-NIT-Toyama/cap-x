@@ -35,6 +35,7 @@ def main(
     port_start: int = 19500,
     port_end: int = 19600,
     max_sessions: int = 20,
+    memory_budget_gb: float = 100.0,
     idle_ttl_min: float = 20.0,
     max_lifetime_min: float = 120.0,
     gpu_uuids: str = os.environ.get("CAPX_GPU_UUIDS", ""),
@@ -42,7 +43,10 @@ def main(
     """
     Args:
         public_host: ZMQ の宛先を固定する。省略すると、クライアントが繋いだ宛先を使う。
-        max_sessions: 同時セッション数。× 4GB がこのマシンの RAM に収まること。
+        max_sessions: 同時セッション数の上限。
+        memory_budget_gb: 全セッションに貸すメモリの合計（GB）。各セッションの上限
+            （robosuite 4GB、LIBERO 8GB）の和がこれを超えるなら断る。このマシンの RAM から
+            OS・backend・中継などの分を残した値にする。
         gpu_uuids: `nvidia-smi -L` の UUID をカンマ区切りで。セッションに順に割り当てる。
             省略すると環境変数 CAPX_GPU_UUIDS、それも無ければ全 GPU が見える。
             番号ではなく UUID を使うのは、`nvidia-smi` と CUDA で番号の付け方が
@@ -66,6 +70,7 @@ def main(
         port_start=port_start,
         port_end=port_end,
         max_sessions=max_sessions,
+        memory_budget_bytes=int(memory_budget_gb * 1024**3),
         idle_ttl_s=idle_ttl_min * 60,
         max_lifetime_s=max_lifetime_min * 60,
         gpu_devices=[g.strip() for g in gpu_uuids.split(",") if g.strip()] or ["all"],

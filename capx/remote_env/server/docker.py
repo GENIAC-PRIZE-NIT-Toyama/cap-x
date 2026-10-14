@@ -46,8 +46,18 @@ LABEL_SESSION = "capx.session"
 LABEL_OWNER = "capx.owner"
 
 
+def memory_bytes(text: str) -> int:
+    """`docker run --memory` の書き方（`4g` / `512m` / `1024k` / バイト数）をバイト数にする。"""
+    units = {"k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
+    text = text.strip().lower().removesuffix("b")
+    if text and text[-1] in units:
+        return int(float(text[:-1]) * units[text[-1]])
+    return int(text)
+
+
 @dataclass(frozen=True)
 class Limits:
+    #: タスクの種類ごとの値は `tasks.RUNTIME_MEMORY`（LIBERO は多く要る）。
     memory: str = "4g"
     cpus: str = "2"
     #: プロセスとスレッドの合計の上限（cgroup の pids はスレッドも数える）。LIBERO の API は
