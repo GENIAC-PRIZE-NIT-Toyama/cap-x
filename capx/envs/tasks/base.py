@@ -413,6 +413,16 @@ class CodeExecutionEnvBase(Env):
             return [f.copy() for f in self.low_level_env._frame_buffer[start:end]]
         return []
 
+    def iter_video_frames_range(self, start: int, end: int):
+        """`get_video_frames_range` を 1 枚ずつ返す（動画に書くとき用）。
+
+        シミュレータが持っていればそれを使い、無ければまとめて取り出して 1 枚ずつ返す。
+        """
+        low = self.low_level_env
+        if hasattr(low, "iter_video_frames_range"):
+            return low.iter_video_frames_range(start, end)
+        return iter(self.get_video_frames_range(start, end))
+
     def get_wrist_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
         if hasattr(self.low_level_env, "get_wrist_video_frames"):
             return self.low_level_env.get_wrist_video_frames(clear=clear)

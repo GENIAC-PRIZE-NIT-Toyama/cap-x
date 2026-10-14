@@ -389,7 +389,7 @@ def main(
     execution_time_s: float = 1000.0,
     trial_wall_clock_s: float = 3000.0,
     max_steps: int = 10,
-    frame_budget_mb: int = 900,
+    frame_budget_mb: int = 400,
     isolate_policy: bool = True,
     task_id: str = "",
     override: tuple[str, ...] = (),
