@@ -90,6 +90,8 @@ class Config:
     ready_timeout_s: float = 300.0
     ping_failures_allowed: int = 3
     gpu_devices: list[str] = field(default_factory=lambda: ["all"])
+    worker_env: dict[str, str] = field(default_factory=dict)
+    """全 worker に渡す設定（秘密ではないもの）。例: `MOLMO2_VLM_MODEL`。"""
 
 
 class SessionManager:
@@ -143,6 +145,7 @@ class SessionManager:
             config_path=entry.config_path,
             task_id=task_id,
             overrides=entry.overrides,
+            env=dict(self.config.worker_env),
             host_port=port,
             gpu_device=next(self._gpus),
             secrets={

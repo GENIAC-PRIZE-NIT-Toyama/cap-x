@@ -35,11 +35,11 @@ PROXIES: dict[str, tuple[str, int]] = {
     "GRASPNET_SERVICE_URL": ("capx-proxy-graspnet", 8115),
     "PYROKI_SERVICE_URL": ("capx-proxy-pyroki", 8116),
     # 物体を指し示す VLM。LIBERO の API が、SAM3 で見つからなかったときの予備に使う。
-    "MOLMO_SERVICE_URL": ("capx-proxy-molmo", 8122),
+    "MOLMO2_VLM_URL": ("capx-proxy-molmo", 8122),
 }
 
 #: URL の末尾に付ける path（OpenAI 互換のサーバは /v1 まで含めて渡す）。
-PROXY_PATHS: dict[str, str] = {"MOLMO_SERVICE_URL": "/v1"}
+PROXY_PATHS: dict[str, str] = {"MOLMO2_VLM_URL": "/v1"}
 
 LABEL_MANAGED = "capx.managed"
 LABEL_SESSION = "capx.session"
@@ -72,6 +72,8 @@ class RunSpec:
     limits: Limits = field(default_factory=Limits)
     #: 秘密鍵などをここに入れる。argv ではなく環境変数で渡す（`ps` に出ない）。
     secrets: dict[str, str] = field(default_factory=dict)
+    #: 秘密ではない設定（Molmo のモデル名など）。全セッション共通の値を backend が渡す。
+    env: dict[str, str] = field(default_factory=dict)
     #: 許可リスト上のタスク名。結果に残す名前になる。
     task_id: str = ""
     #: config への上書き（許可リストが決めた値だけ）。
@@ -146,6 +148,9 @@ def run_command(spec: RunSpec) -> list[str]:
     # 知覚 API は proxy 経由に書き換えて渡す。参加者はこれらを設定しない。
     for env_var, (name, port) in PROXIES.items():
         cmd += ["-e", f"{env_var}=http://{name}:{port}{PROXY_PATHS.get(env_var, '')}"]
+
+    for key, value in spec.env.items():
+        cmd += ["-e", f"{key}={value}"]
 
     for key, value in spec.secrets.items():
         cmd += ["-e", f"{key}={value}"]

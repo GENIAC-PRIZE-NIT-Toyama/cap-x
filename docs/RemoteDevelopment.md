@@ -190,7 +190,11 @@ worker 側は ZAP authenticator で登録済み公開鍵だけを許可する。
 再検証が必要**（workshop の "verified on this host" は `127.0.0.1` 公開での検証）。
 
 SAM3 / GraspNet / PyRoKi は `192.168.0.200` の 8114 / 8115 / 8116。Molmo2（物体を指し示す VLM。
-LIBERO の API が、SAM3 で見つからなかったときの予備に使う）は `10.93.33.1:8000`。コンテナはルートを
+LIBERO の API が、SAM3 で見つからなかったときの予備に使う）は `MOLMO2_VLM_URL`（既定
+`http://10.93.33.1:8000/v1`）、モデル名は `MOLMO2_VLM_MODEL`。backend を起動する環境（`.envrc`）に
+置き、compose の中継（`capx-proxy-molmo`）はこの URL から宛先を作り、backend はモデル名を worker に
+渡す。worker には中継の宛先（`http://capx-proxy-molmo:8122/v1`）を渡す。Molmo は環境（ロボットの
+API）の一部なので、LLM（Agent が手元から呼ぶ）と違って worker 側から呼ぶ。コンテナはルートを
 持たないので、固定宛先の `perception-proxy-*`（socat）をそのセッションのネットワークに
 繋いで到達させる。`*_SERVICE_URL` は backend が `docker run` の `-e` で proxy 宛に
 書き換えて注入するので、**参加者はこれらを設定しない**。

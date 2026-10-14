@@ -17,9 +17,10 @@ _PROC: Any | None = None  # kept for backward compatibility; unused with vLLM HT
 _MODEL: Any | None = None  # kept for backward compatibility; unused with vLLM HTTP API
 
 # SERVICE_URL = "https://openrouter.ai/api/" # OpenRouter
-# remote の worker では backend が中継（capx-proxy-molmo）の宛先を渡す。
-SERVICE_URL = os.environ.get("MOLMO_SERVICE_URL", "http://127.0.0.1:8122/v1")  # local
-DEFAULT_MODEL = os.environ.get("MOLMO_MODEL", "allenai/Molmo2-8B")
+# 宛先とモデル名は環境変数で受ける（.envrc の MOLMO2_VLM_URL / MOLMO2_VLM_MODEL）。
+# remote の worker では、backend が中継（capx-proxy-molmo）の宛先と、モデル名を渡す。
+SERVICE_URL = os.environ.get("MOLMO2_VLM_URL", "http://127.0.0.1:8122/v1")  # local
+DEFAULT_MODEL = os.environ.get("MOLMO2_VLM_MODEL", "allenai/Molmo2-8B")
 
 
 

@@ -30,8 +30,13 @@ services:
     restart: unless-stopped
 
   # 物体を指し示す VLM（Molmo2）。LIBERO の API が SAM3 の予備として使う。
+  # 宛先は .envrc と同じ MOLMO2_VLM_URL（http://host:port/v1）から host:port を取り出す。
+  # URL にはポートを書くこと（socat は host:port で繋ぐ）。
   proxy-molmo:
     image: alpine/socat
     container_name: capx-proxy-molmo
-    command: ["tcp-listen:8122,fork,reuseaddr", "tcp:${MOLMO_UPSTREAM:?set MOLMO_UPSTREAM in .env}"]
+    environment:
+      MOLMO2_VLM_URL: ${MOLMO2_VLM_URL:?set MOLMO2_VLM_URL in .env or the shell}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['u="$${MOLMO2_VLM_URL#*://}"; u="$${u%%/*}"; exec socat tcp-listen:8122,fork,reuseaddr "tcp:$$u"']
     restart: unless-stopped

@@ -23,6 +23,10 @@ from capx.remote_env.server.probe import make_prober
 from capx.remote_env.server.sessions import Config, SessionManager
 
 
+#: backend の環境変数のうち、worker に渡すもの。
+WORKER_ENV_KEYS = ("MOLMO2_VLM_MODEL",)
+
+
 def main(
     *,
     public_host: str | None = None,
@@ -65,6 +69,9 @@ def main(
         idle_ttl_s=idle_ttl_min * 60,
         max_lifetime_s=max_lifetime_min * 60,
         gpu_devices=[g.strip() for g in gpu_uuids.split(",") if g.strip()] or ["all"],
+        # worker にそのまま渡す設定。宛先（MOLMO2_VLM_URL）は渡さない——worker からは
+        # 直接届かないので、中継（capx-proxy-molmo）の宛先を docker.py が渡す。
+        worker_env={k: os.environ[k] for k in WORKER_ENV_KEYS if os.environ.get(k)},
     )
 
     # プローブの鍵は manager が持つ。prober は manager ができてから繋ぐ。

@@ -280,3 +280,10 @@ def test_sessions_take_gpus_in_turn_by_uuid() -> None:
         "NVIDIA_VISIBLE_DEVICES=GPU-bbb" in cmd
         for cmd in docker.ran("docker run", b.spec.container_name)[0]
     )
+
+
+def test_the_worker_gets_the_shared_settings() -> None:
+    docker = FakeDocker()
+    mgr = _manager(docker, prober=_alive, worker_env={"MOLMO2_VLM_MODEL": "m"})
+    session = run(mgr.create("alice", "cube_stack", _client_key()))
+    assert "MOLMO2_VLM_MODEL=m" in docker.ran("docker run", session.spec.container_name)[0]
