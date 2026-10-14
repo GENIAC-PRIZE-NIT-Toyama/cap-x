@@ -331,12 +331,14 @@ GPU マシン側の操作が途絶えるので、backend の idle 回収がコ�
 **`truncated` の判定は `step(code)` が終わってからなので、1 回の `step()` の中で無限
 ループするとバッファが青天井に伸びる。**
 
-対策: **上限 900MB（全カメラ合計の byte budget）。超過時は間引き率を倍にする**
+対策: **上限 400MB（全カメラ合計の byte budget、JPEG のバイト数で数える）。超過時は間引き率を倍にする**
 （バッファを 1 つ飛ばしで半分に間引き、以降の `_subsample_rate` を 5 → 10 に上げる）。
 記録停止は結末を、リングバッファは冒頭を失うが、間引きならエピソード全体が残る。
 
-枚数ではなく byte で持つのは、解像度が simulator で違うため。
-900MB は Robosuite で 1200 枚相当（wrist 併用で 600 枚）、LIBERO で 768 枚相当（同 384 枚）。
+枚数ではなく byte で持つのは、解像度が simulator で違うため。上限は当初 900MB（生の画像で数えて
+Robosuite 1200 枚、LIBERO 768 枚）だったが、LIBERO で worker が 4GB を超えて強制終了されたため、
+フレームを JPEG で持つことにし（下記）、上限も 400MB に下げた。JPEG（品質 90）は 1 枚 30KB 前後
+（cube_stack の実測、512×512）なので、400MB でも数千枚持て、間引きはほとんど起きない。
 
 間引きは `turn_frame_ranges` を壊す。フレームに `seq` / `sim_step` / `turn_id` / `camera`
 を持たせ、index ではなく `turn_id` で引く。各 turn の先頭と末尾のフレームは pin する。
@@ -345,8 +347,20 @@ GPU マシン側の操作が途絶えるので、backend の idle 回収がコ�
 `sim_step`、effective sampling rate の変更履歴、original / retained / dropped の枚数を
 成果物 metadata に記録する。
 
-バッファは生の numpy のまま保持し、**JPEG 化は送信時のみ**。mp4 書き出しでデコード・
-再エンコードが挟まらず、リプレイ画質が落ちない。
+**バッファは JPEG（品質 90）で保持する**（`capx/utils/frame_buffer.py`）。当初は「生の numpy の
+まま保持し、JPEG 化は送信時のみ」として、リプレイ画質を優先していた。LIBERO（800×512）で、生の
+フレームと、シミュレータ・JAX（IK）・生成コード用のプロセスを合わせて worker が 4GB を超え、OOM で
+強制終了された（Docker の `oom` イベント、終了コード 137）。cap-x-workshop も同じ理由で同じ対策をして
+いる。受け入れること:
+
+- 動画は JPEG を経由するぶん、わずかに画質が落ちる（見返す用途には十分）。
+- 録るたびに JPEG に変換する時間（1 枚 0.5〜1 ミリ秒程度）が step に加わり、`execution_time_s` に含まれる。
+
+取り出すときは画像の配列に戻すので、呼び出し側の扱いは変わらない。手元 PC に届くもの（`render()` の
+JPEG、ターン動画の mp4、ストリームの JPEG）とプロトコルも変わらない。worker のターン動画は
+`iter_video_frames_range()` で 1 枚ずつ戻して書く（まとめて戻すと、生の画像が一度に並んで、節約した
+メモリを取り出しの時点で使ってしまう）。ローカル実行の試行全体の動画は、メモリ上限が無いので
+まとめて戻している。
 
 depth はバッファに入らない（`_record_frame()` は `depth=False`）。観測 dict 側にあり、
 step ごとに置き換わるので累積しない。depth や segmentation を Agent に送る場合は
@@ -431,7 +445,7 @@ local モードは従来どおり 1 venv 1 simulator。
 - ゴール文 `{libero_environment_goal}` は `CodeExecutionEnvBase.reset()` で実際の文に置き換える
   （`handle.task_language`）。`TaskSpec.instruction` にも実際の文が入る。旧来の
   `_patch_libero_goal`（`capx/envs/trial.py`）は置き換え済みの文を見て何もしない。
-- 録画バッファは robosuite と同じ `FrameBufferMixin`（800×512 でも 900MB の上限と間引きが効く）。
+- 録画バッファは robosuite と同じ `FrameBufferMixin`（JPEG で持ち、400MB の上限と間引きが効く）。
   カメラ名は `save_camera_name = "agentview"` / `render_camera_names = ["agentview"]`、手首は
   `robot0_eye_in_hand`。
 
@@ -831,7 +845,7 @@ uv run --no-sync --active tests/test_environments.py \
 
 決めていないことは無い。実機で確かめていないものと、対象外のものを挙げる。
 
-- 間引きが実機で発動する長さ（900MB 超）の試行。ロジックは手元のテストで確認済み。
+- 間引きが実機で発動する長さ（JPEG で 400MB 超）の試行。ロジックは手元のテストで確認済み。
 - ストリーミングを実 worker で購読すること、`doctor.py` の実機実行。
 - 録画バッファの間引きは robosuite 基底のみ。handover / two_arm_lift / LIBERO は自前実装のまま。
 - 各フレームへの `sim_step` の記録と、間引き時の事前確保（一時的なメモリ増を避ける工夫）は未実装。
