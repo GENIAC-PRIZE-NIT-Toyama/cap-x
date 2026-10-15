@@ -45,7 +45,7 @@ def main(
         public_host: ZMQ の宛先を固定する。省略すると、クライアントが繋いだ宛先を使う。
         max_sessions: 同時セッション数の上限。
         memory_budget_gb: 全セッションに貸すメモリの合計（GB）。各セッションの上限
-            （タスクの種類ごと。今は 4GB）の和がこれを超えるなら断る。このマシンの RAM から
+            （タスクの種類ごと。robosuite 4GB、LIBERO 5GB）の和がこれを超えるなら断る。このマシンの RAM から
             OS・backend・中継などの分を残した値にする。
         gpu_uuids: `nvidia-smi -L` の UUID をカンマ区切りで。セッションに順に割り当てる。
             省略すると環境変数 CAPX_GPU_UUIDS、それも無ければ全 GPU が見える。

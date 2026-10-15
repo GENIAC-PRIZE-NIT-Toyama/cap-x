@@ -77,11 +77,12 @@ IMAGES: dict[str, str] = {
 
 #: タスクの種類ごとの、worker 1 つのメモリの上限。LIBERO はかつて、2 台のカメラの物体の
 #: 点群の全ての組の距離を一度に計算していて、上限をいくつにしても超えて落ちた。区切って
-#: 計算する形（capx/utils/pairwise.py）に直したので 4GB。足りなければ環境変数で上書きする
+#: 計算する形（capx/utils/pairwise.py）に直した。それでも起動後に 3.4GB 前後を使い、
+#: 4GB では余裕が 300MB 程度しかないので 5GB にしている。足りなければ環境変数で上書きする
 #: （backend を起動する環境に置く）。
 RUNTIME_MEMORY: dict[str, str] = {
     "robosuite": os.environ.get("CAPX_WORKER_MEMORY_ROBOSUITE", "4g"),
-    "libero": os.environ.get("CAPX_WORKER_MEMORY_LIBERO", "4g"),
+    "libero": os.environ.get("CAPX_WORKER_MEMORY_LIBERO", "5g"),
 }
 
 

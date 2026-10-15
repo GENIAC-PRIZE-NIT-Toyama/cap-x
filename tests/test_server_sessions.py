@@ -304,17 +304,17 @@ def test_each_runtime_gets_its_own_memory_limit() -> None:
 
     robosuite, libero = run(scenario())
     assert robosuite.spec.limits.memory == "4g"
-    assert libero.spec.limits.memory == "4g"
+    assert libero.spec.limits.memory == "5g"
     run_cmd = docker.ran("docker run", libero.spec.container_name)[0]
-    assert run_cmd[run_cmd.index("--memory") + 1] == "4g"
-    assert mgr.reserved_memory_bytes() == 8 * GIB
+    assert run_cmd[run_cmd.index("--memory") + 1] == "5g"
+    assert mgr.reserved_memory_bytes() == 9 * GIB
 
 
 def test_sessions_beyond_the_memory_budget_are_refused_with_429() -> None:
-    """合計 12GB なら 3 つ（4GB ずつ）まで。次は断る。"""
+    """合計 14GB なら LIBERO 2 つ（5GB ずつ）と robosuite 1 つ（4GB）まで。次は断る。"""
     docker = FakeDocker()
     mgr = SessionManager(
-        Config(port_start=19500, port_end=19510, memory_budget_bytes=12 * GIB),
+        Config(port_start=19500, port_end=19510, memory_budget_bytes=14 * GIB),
         runner=docker,
         prober=_alive,
     )
@@ -337,7 +337,7 @@ def test_concurrent_creates_cannot_overshoot_the_budget() -> None:
     """同時に来ても、空きを二重に数えない（確認と登録の間に待ちを挟まない）。"""
     docker = FakeDocker()
     mgr = SessionManager(
-        Config(port_start=19500, port_end=19510, memory_budget_bytes=4 * GIB),
+        Config(port_start=19500, port_end=19510, memory_budget_bytes=5 * GIB),
         runner=docker,
         prober=_alive,
     )

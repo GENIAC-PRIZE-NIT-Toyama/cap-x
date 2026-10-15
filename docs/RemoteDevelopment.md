@@ -234,7 +234,7 @@ GPU は `--runtime nvidia`（`--gpus` ではない）。
 さらに増える）。作り直すときは、先に古い image を消して空きを確保する。
 
 **メモリの上限はタスクの種類ごと**（`capx/remote_env/server/tasks.py` の `RUNTIME_MEMORY`）。
-今は robosuite・LIBERO とも 4GB。足りなければ backend を起動する環境で
+今は robosuite 4GB、LIBERO 5GB。足りなければ backend を起動する環境で
 `CAPX_WORKER_MEMORY_LIBERO=6g` などと上書きする。
 
 **LIBERO の worker がメモリ不足で落ちていた原因と対策。** LIBERO の API の
@@ -253,7 +253,10 @@ OOM の 5 回はすべてこの計算の最中に起きた（残る 1 回は 8GB
 
 対策: 同じ式を一方の点群を区切りながら計算し、見つかった時点で打ち切る（`capx/utils/pairwise.py`。
 途中の配列は 256MB まで）。各組の距離は元と同じ演算なので、判定の結果は元と変わらない
-（`tests/test_pairwise.py`）。上限は 4GB のまま。
+（`tests/test_pairwise.py`）。直したあとの同じ 4 回では OOM も「45 秒返事が無い」も無く、worker の
+最大は 3.8GB だった（元の式なら 8.7GB を使う 1.2 万点 × 1.2 万点でも、計算の前後で増えない）。
+ただし起動後に 3.4GB 前後を使う回があり、4GB では余裕が 300MB 程度しかないので、LIBERO の上限は
+5GB にした。
 
 途中で、点群のノイズ除去（scikit-learn の DBSCAN）を疑って置き換えたが、実際の LIBERO の物体の点群は
 最大でも 1.8 万点弱で、DBSCAN は数十 MB しか使っていなかった。原因ではなかったので、元に戻した。
