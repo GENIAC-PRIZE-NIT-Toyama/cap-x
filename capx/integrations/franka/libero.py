@@ -37,6 +37,27 @@ def _get_curobo_api():
 from capx.utils.noise_filter import dbscan_keep_mask
 
 # ------------------------------- Control API ------------------------------
+def _debug_memory(label: str, **values) -> None:
+    """調査用（一時的）。`CAPX_DEBUG_PING=1` のとき、このプロセスの RssAnon と値を出す。
+
+    LIBERO の worker がメモリ不足で落ちる原因を、時刻と点の数で突き合わせるため。
+    """
+    import os
+
+    if os.environ.get("CAPX_DEBUG_PING") != "1":
+        return
+    rss = "?"
+    try:
+        with open("/proc/self/status", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("RssAnon:"):
+                    rss = str(int(line.split()[1]) // 1024)
+    except OSError:
+        pass
+    extra = " ".join(f"{k}={v}" for k, v in values.items())
+    print(f"[memory-debug] {time.strftime('%H:%M:%S')} {label} rss_anon_mb={rss} {extra}", flush=True)
+
+
 class FrankaLiberoApi(ApiBase):
     """Robot control helpers for Franka.
     """
@@ -577,11 +598,18 @@ class FrankaLiberoApi(ApiBase):
             
             # Find intersection using numpy broadcasting
             if len(wrist_pts_3d) > 0 and len(agent_pts_3d) > 0:
+                _debug_memory(
+                    "pairwise-distances before",
+                    agent=len(agent_pts_3d),
+                    wrist=len(wrist_pts_3d),
+                    expected_mb=len(agent_pts_3d) * len(wrist_pts_3d) * 32 // 2**20,
+                )
                 # Compute pairwise distances between all agent and wrist points
                 distances = np.linalg.norm(
                     agent_pts_3d[:, np.newaxis, :] - wrist_pts_3d[np.newaxis, :, :], 
                     axis=2
                 )
+                _debug_memory("pairwise-distances after")
                 # Find minimum distance for each agent point
                 min_distances = np.min(distances, axis=1)
                 # Keep agent points within threshold
