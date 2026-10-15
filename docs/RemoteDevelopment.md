@@ -885,8 +885,8 @@ uv run --no-sync --active tests/test_environments.py \
 
 - 間引きが実機で発動する長さ（JPEG で 400MB 超）の試行。ロジックは手元のテストで確認済み。
 - ストリーミングを実 worker で購読すること、`doctor.py` の実機実行。
-- 録画バッファの間引きは robosuite 基底のみ。handover / two_arm_lift / LIBERO は自前実装のまま。
+- 録画バッファの上限と間引きは robosuite 基底と LIBERO のみ。handover / two_arm_lift・実機・BEHAVIOR は自前実装のまま。
 - 各フレームへの `sim_step` の記録と、間引き時の事前確保（一時的なメモリ増を避ける工夫）は未実装。
 - seed が robosuite の初期配置まで届かない件（§12）。
 - ネットワーク隔離の `0.0.0.0` 公開構成での実測（Phase 0A-4）。
-- Phase 6（LIBERO）、Phase 7（BEHAVIOR）。
+- Phase 7（BEHAVIOR）。進捗と残りの作業は `CAPX_AGENT_SEPARATION.md` にまとめている。
