@@ -87,7 +87,7 @@ class Config:
 
     memory_budget_bytes: int = 100 * 1024**3
     """全セッションに貸すメモリの合計の上限。各セッションの上限（タスクの種類ごと。
-    robosuite 4GB、LIBERO 8GB）を足して、これを超えるなら新しいセッションを断る。
+    `tasks.RUNTIME_MEMORY`）を足して、これを超えるなら新しいセッションを断る。
     GPU マシンの RAM から、OS・backend・中継などの分を残した値にする。"""
 
     idle_ttl_s: float = 20 * 60
