@@ -250,6 +250,34 @@ uv run --no-sync --active capx/envs/launch.py \
 
 ---
 
+## 自分の Agent を動かす（ローカル実行・リモート実行）
+
+Agent（LLM の呼び方・プロンプト・multi-turn の戦略）を 1 つのファイルに書き、評価（Bench）とシミュレータ（Gym）から切り離して差し替えられます。Agent は `step(code)` と `render()` だけを使い、報酬と成功判定は Bench だけが読みます。
+
+| 実行のしかた | シミュレータ | 入口 | 結果の保存先 |
+| --- | --- | --- | --- |
+| ローカル実行 | 同じマシン（上記のセットアップが必要） | `local/trial.py` | 設定ファイルの `output_dir`（例 `outputs/...`） |
+| リモート実行 | GPU マシンの worker コンテナ（手元 PC にはシミュレータも GPU も不要） | `remote/trial.py` | `remote/outputs/` |
+
+```bash
+# ローカル実行: 自分の Agent を差し込む（--agent を省くと組み込みの CaPAgent0）
+uv run --no-sync --active local/trial.py \
+    --config-path env_configs/cube_stack/franka_robosuite_cube_stack.yaml \
+    --agent local/agents/my_agent.py \
+    --model "google/gemini-3.1-pro-preview"
+
+# リモート実行: 手元 PC から GPU マシンのシミュレータを使う
+cd remote
+uv sync
+uv run --env-file .env trial.py --task cube_stack --agent agents/my_agent.py
+```
+
+- リモート実行の手順（参加者向け）: [remote/README.md](remote/README.md)
+- GPU マシン側の準備（管理者向け）: [docs/remote-server-setup.md](docs/remote-server-setup.md)
+- 設計: [docs/RemoteDevelopment.md](docs/RemoteDevelopment.md)、計画と進捗: [CAPX_AGENT_SEPARATION.md](CAPX_AGENT_SEPARATION.md)
+
+---
+
 ## Documentation
 
 | Guide | Contents |
@@ -263,6 +291,10 @@ uv run --no-sync --active capx/envs/launch.py \
 | [Real-World Franka Panda Bringup](docs/real-franka.md) | Bringup with robots_realtime, real-robot QuickStart |
 | [RL Training](docs/rl-training.md) | CaP-RL with GRPO/VeRL, sim-to-real transfer |
 | [Skill Library Compilation](scripts/skill_library_compilation/README.md) | Analyze eval outputs, compile reusable skill libraries |
+| [Remote Execution](remote/README.md) | Run your own Agent from a laptop against simulators on a GPU machine |
+| [Remote Server Setup](docs/remote-server-setup.md) | GPU-machine side: worker images, perception proxies, backend |
+| [Agent Separation Design](docs/RemoteDevelopment.md) | Agent / Bench / Gym split, protocol, limits, metrics |
+| [Agent Separation Plan](CAPX_AGENT_SEPARATION.md) | Plan, progress and remaining work of the Agent separation |
 
 ---
 

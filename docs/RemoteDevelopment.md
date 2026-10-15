@@ -159,8 +159,8 @@ backend は worker に HTTP で話さない。生存確認も、backend 専用�
 `ping` する。だからコンテナが 127.0.0.1 に公開する HTTP ポートは要らない。
 
 ```
-session_id ─┬─ container:  capx-ws-<id>
-            ├─ network:    capx-ws-net-<id>  (--internal)
+session_id ─┬─ container:  capx-w-<id>
+            ├─ network:    capx-net-<id>  (--internal)
             ├─ zmq_port:   19500-19599  → 0.0.0.0 公開（RemoteEnv 用）
             ├─ curve_keys: セッションごとに生成
             └─ last_active → idle 回収
