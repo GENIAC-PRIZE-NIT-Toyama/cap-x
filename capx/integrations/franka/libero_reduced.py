@@ -46,7 +46,7 @@ def _get_curobo_api():
         _curobo_api = _mod
     return _curobo_api
 
-from capx.utils.noise_filter import dbscan_keep_mask
+from sklearn.cluster import DBSCAN
 
 # ------------------------------- Control API ------------------------------
 class FrankaLiberoApiReduced(ApiBase):
@@ -496,12 +496,11 @@ class FrankaLiberoApiReduced(ApiBase):
         """
         eps = 0.005  # Maximum distance between samples to be neighbors
         min_samples = 10
-        # DBSCAN と同じ判定を、少ないメモリで計算する（capx/utils/noise_filter.py）。
-        # DBSCAN は点が密だと数 GB を使い、worker のメモリ上限を超えて落ちていた。
-        keep = dbscan_keep_mask(points, eps=eps, min_samples=min_samples)
-        filtered_pointcloud = points[keep]
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+        labels = dbscan.fit_predict(points)
+        filtered_pointcloud = points[labels != -1]
         if colors is not None:
-            filtered_colors = colors[keep]
+            filtered_colors = colors[labels != -1]
         else:
             filtered_colors = None
         return filtered_pointcloud, filtered_colors

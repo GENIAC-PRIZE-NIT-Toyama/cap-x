@@ -34,7 +34,9 @@ def _get_curobo_api():
         from capx.integrations.motion import curobo_api as _mod
         _curobo_api = _mod
     return _curobo_api
-from capx.utils.noise_filter import dbscan_keep_mask
+from sklearn.cluster import DBSCAN
+
+from capx.utils.pairwise import any_pair_within
 
 # ------------------------------- Control API ------------------------------
 def _debug_memory(label: str, **values) -> None:
@@ -602,19 +604,16 @@ class FrankaLiberoApi(ApiBase):
                     "pairwise-distances before",
                     agent=len(agent_pts_3d),
                     wrist=len(wrist_pts_3d),
-                    expected_mb=len(agent_pts_3d) * len(wrist_pts_3d) * 32 // 2**20,
+                    unchunked_mb=len(agent_pts_3d) * len(wrist_pts_3d) * 64 // 2**20,
                 )
-                # Compute pairwise distances between all agent and wrist points
-                distances = np.linalg.norm(
-                    agent_pts_3d[:, np.newaxis, :] - wrist_pts_3d[np.newaxis, :, :], 
-                    axis=2
-                )
-                _debug_memory("pairwise-distances after")
-                # Find minimum distance for each agent point
-                min_distances = np.min(distances, axis=1)
                 # Keep agent points within threshold
                 threshold = 0.01  # 1cm
-                if min_distances.min() < threshold:
+                # 全ての組の距離を一度に持つと 1 組 64 バイトを使い、worker のメモリ上限を
+                # 超えて落ちていた。同じ式を区切って計算し、1cm 未満の組があるかだけを見る
+                # （capx/utils/pairwise.py。判定の結果は元と同じ）。
+                close = any_pair_within(agent_pts_3d, wrist_pts_3d, threshold)
+                _debug_memory("pairwise-distances after")
+                if close:
                     points_3d = np.concatenate([agent_pts_3d, wrist_pts_3d])
                 else:
                     if wrist_score > agent_data["score"]:
@@ -671,12 +670,11 @@ class FrankaLiberoApi(ApiBase):
         """
         eps = 0.005  # Maximum distance between samples to be neighbors
         min_samples = 10
-        # DBSCAN と同じ判定を、少ないメモリで計算する（capx/utils/noise_filter.py）。
-        # DBSCAN は点が密だと数 GB を使い、worker のメモリ上限を超えて落ちていた。
-        keep = dbscan_keep_mask(points, eps=eps, min_samples=min_samples)
-        filtered_pointcloud = points[keep]
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+        labels = dbscan.fit_predict(points)
+        filtered_pointcloud = points[labels != -1]
         if colors is not None:
-            filtered_colors = colors[keep]
+            filtered_colors = colors[labels != -1]
         else:
             filtered_colors = None
         return filtered_pointcloud, filtered_colors

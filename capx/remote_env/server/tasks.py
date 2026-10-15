@@ -75,10 +75,10 @@ IMAGES: dict[str, str] = {
 }
 
 
-#: タスクの種類ごとの、worker 1 つのメモリの上限。LIBERO はかつて点群のノイズ除去
-#: （scikit-learn の DBSCAN）が一時的に数 GB 膨らみ、12GB でも足りない回があった。
-#: 同じ判定を少ないメモリで計算する形（capx/utils/noise_filter.py）に替えたので、4GB に
-#: 戻した。足りなければ環境変数で上書きする（backend を起動する環境に置く）。
+#: タスクの種類ごとの、worker 1 つのメモリの上限。LIBERO はかつて、2 台のカメラの物体の
+#: 点群の全ての組の距離を一度に計算していて、上限をいくつにしても超えて落ちた。区切って
+#: 計算する形（capx/utils/pairwise.py）に直したので 4GB。足りなければ環境変数で上書きする
+#: （backend を起動する環境に置く）。
 RUNTIME_MEMORY: dict[str, str] = {
     "robosuite": os.environ.get("CAPX_WORKER_MEMORY_ROBOSUITE", "4g"),
     "libero": os.environ.get("CAPX_WORKER_MEMORY_LIBERO", "4g"),

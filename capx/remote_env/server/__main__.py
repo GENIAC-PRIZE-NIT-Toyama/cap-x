@@ -24,7 +24,7 @@ from capx.remote_env.server.sessions import Config, SessionManager
 
 
 #: backend の環境変数のうち、worker に渡すもの。
-WORKER_ENV_KEYS = ("MOLMO2_VLM_MODEL", "CAPX_DEBUG_PING", "CAPX_CHECK_NOISE_FILTER")
+WORKER_ENV_KEYS = ("MOLMO2_VLM_MODEL", "CAPX_DEBUG_PING")
 
 
 def main(
