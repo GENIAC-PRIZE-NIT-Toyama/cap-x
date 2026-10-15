@@ -3,10 +3,22 @@
 自分の Agent を書いて、GPU マシンのロボットシミュレータで動かす場所。
 このフォルダの外は触らなくていい。
 
+## 準備
+
+- **Python 3.10〜3.13** と [uv](https://docs.astral.sh/uv/)（`curl -LsSf https://astral.sh/uv/install.sh | sh`）。
+  シミュレータも GPU も要らない（Windows / macOS / Linux）
+- **このリポジトリ**。submodule は要らない（`git clone` だけでよい）
+- **GPU マシンに届くこと**。管理者に聞いた GPU マシンの、セッションを作るポート（例 8080）と、
+  シミュレータに繋ぐポート（19500〜19599）の両方に届く必要がある。学外からは VPN を繋いでおく
+- **LLM のエンドポイント**（OpenAI 互換。vLLM など）。手元 PC から直接呼ぶ
+
+GPU マシン側の準備（管理者向け）は [`docs/remote-server-setup.md`](../docs/remote-server-setup.md)。
+
 ## はじめかた
 
 ```bash
-cd remote
+git clone <このリポジトリの URL> cap-x
+cd cap-x/remote
 cp .env.example .env      # 管理者に聞いた値を入れる
 uv sync
 uv run --env-file .env trial.py
@@ -19,6 +31,22 @@ uv run --env-file .env trial.py
 ```bash
 uv run --env-file .env doctor.py --agent agents/my_agent.py
 ```
+
+## タスクを選ぶ
+
+`--task` で選ぶ。省略すると `cube_stack`。
+
+```bash
+uv run --env-file .env trial.py --task libero_object_3
+```
+
+| 種類 | 名前 |
+|---|---|
+| robosuite | `cube_stack`, `cube_lifting`, `cube_restack`, `nut_assembly`, `spill_wipe`, `two_arm_lift` |
+| LIBERO（標準 5 suite、130 タスク） | `libero_spatial_0`〜`9`, `libero_object_0`〜`9`, `libero_goal_0`〜`9`, `libero_10_0`〜`9`, `libero_90_0`〜`89` |
+
+今選べる一覧は `doctor.py` でも見られる。LIBERO のタスクは、やること（ゴール文）が
+タスクごとに違う。`task.instruction` に入っている。
 
 ## 自分の Agent を書く
 
@@ -42,7 +70,9 @@ LLM は手元から直接呼ぶ（`OPENAI_BASE_URL`）。GPU マシンからは�
 実行が終わると `task_completed` と `reward` が表示される。
 Agent の中からは見えない（`env.step()` が返すのは stdout / stderr だけ）。
 
-`--output-dir results` を付けると、試行ごとのフォルダに次が保存される。
+結果は `remote/outputs/<モデル名>/<タスク名>/<実行した日時>/` に保存される（どこから実行しても同じ。
+実行ごとにフォルダが分かれる）。置き場所は `--output-dir` で変えられ、`--no-save` で保存しない。
+試行ごとのフォルダ（`trial_01_.../`）に次が入る。
 
 | 場所 | 中身 |
 |---|---|

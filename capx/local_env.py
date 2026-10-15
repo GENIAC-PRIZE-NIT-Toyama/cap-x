@@ -147,10 +147,10 @@ class LocalAgentEnv:
         """
         return TrialOutcome(
             reward=self._last_reward,
-            task_completed=self._last_info.get("task_completed"),
+            task_completed=_optional_bool(self._last_info.get("task_completed")),
             terminated=self._last_terminated,
             truncated=self._last_truncated,
-            sandbox_rc=self._last_info.get("sandbox_rc", 1),
+            sandbox_rc=int(self._last_info.get("sandbox_rc", 1)),
             steps=list(self._steps),
         )
 
@@ -191,7 +191,7 @@ class LocalAgentEnv:
             stdout=self._clip(info.get("stdout", "")),
             stderr=self._clip(info.get("stderr", "")),
             reward=float(reward),
-            task_completed=info.get("task_completed"),
+            task_completed=_optional_bool(info.get("task_completed")),
             terminated=bool(terminated),
             truncated=bool(truncated),
             execution_time_s=elapsed_ns / 1e9,
@@ -303,10 +303,15 @@ class LocalAgentEnv:
         `capture_video=True` のときだけ呼ぶ。VDM が毎ターンの動画を要求する
         経路で使う。
         """
-        if not hasattr(self._env, "get_video_frames_range") or end <= start:
+        if end <= start:
             return None
-        frames = self._env.get_video_frames_range(start, end)
-        if not frames:
+        # 1 枚ずつ戻して書く。バッファは JPEG で持っているので、まとめて戻すと
+        # 生の画像が一度に並び、worker のメモリ上限を超えうる。
+        if hasattr(self._env, "iter_video_frames_range"):
+            frames = self._env.iter_video_frames_range(start, end)
+        elif hasattr(self._env, "get_video_frames_range"):
+            frames = iter(self._env.get_video_frames_range(start, end))
+        else:
             return None
 
         import tempfile
@@ -316,5 +321,21 @@ class LocalAgentEnv:
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "turn.mp4"
-            imageio.mimsave(path, frames, fps=30)
+            written = 0
+            with imageio.get_writer(path, fps=30) as writer:
+                for frame in frames:
+                    writer.append_data(frame)
+                    written += 1
+            if written == 0:
+                return None
             return path.read_bytes()
+
+
+def _optional_bool(value: Any) -> bool | None:
+    """シミュレータの真偽値を Python の `bool` にする。分からないとき（None）は None のまま。
+
+    LIBERO の `check_success()` は numpy の真偽値（`numpy.bool_`）を返すことがある
+    （numpy 配列の比較を `and` でつないだ値）。そのまま渡すと、ZMQ を通っても numpy の
+    型のまま届き、`result.json` に書けない。Bench に渡す前に、ここで揃える。
+    """
+    return None if value is None else bool(value)

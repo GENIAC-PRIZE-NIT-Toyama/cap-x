@@ -116,3 +116,61 @@ def test_a_remote_trial_writes_the_same_folder_layout_as_local(tmp_path) -> None
     assert result["budget"]["max_steps"] == 10
     assert result["steps_used"] == 1 and result["schema_version"] == 1
     assert summary.result.task_completed is True
+
+
+class NumpyBoolEnv(FakeCodeEnv):
+    """LIBERO のように、task_completed を numpy の真偽値で返す。"""
+
+    def step(self, code):
+        obs, reward, terminated, truncated, info = super().step(code)
+        info["task_completed"] = np.bool_(False)
+        info["sandbox_rc"] = np.int64(0)
+        return obs, np.float64(0.0), terminated, truncated, info
+
+
+def test_numpy_values_from_the_simulator_become_python_values_locally() -> None:
+    env = LocalAgentEnv(NumpyBoolEnv(), task_id="fake")
+    env.reset_for_trial(1, 1)
+    env.step("move()")
+    outcome = env.evaluate()
+    assert type(outcome.task_completed) is bool and outcome.task_completed is False
+    assert type(outcome.sandbox_rc) is int
+    assert type(env.recorded_steps[0].task_completed) is bool
+
+
+def test_numpy_values_arrive_as_python_values_over_zmq() -> None:
+    served = LocalAgentEnv(NumpyBoolEnv(), task_id="fake")
+    port = _free_port()
+    server = WorkerServer(served, session_id="s")
+    threading.Thread(
+        target=server.serve, kwargs={"port": port, "host": "127.0.0.1"}, daemon=True
+    ).start()
+    time.sleep(0.4)
+    remote = RemoteAgentEnv(endpoint=f"tcp://127.0.0.1:{port}", session_id="s")
+    try:
+        remote.reset_for_trial(1, 1)
+        remote.step("move()")
+        outcome = remote.evaluate()
+    finally:
+        remote.close()
+        server._stop.set()
+    assert type(outcome.task_completed) is bool
+
+
+def test_result_json_accepts_numpy_values_but_not_unknown_types(tmp_path) -> None:
+    import pytest
+
+    from capx.bench.artifacts import save_trial_extras
+
+    save_trial_extras(
+        str(tmp_path / "a"), steps=[], llm_entries=[], agent_artifacts={}, images=[],
+        result={"task_completed": np.bool_(True), "reward": np.float32(0.5), "xs": np.arange(2)},
+    )
+    data = json.loads((tmp_path / "a/result.json").read_text())
+    assert data == {"task_completed": True, "reward": 0.5, "xs": [0, 1]}
+
+    with pytest.raises(TypeError):
+        save_trial_extras(
+            str(tmp_path / "b"), steps=[], llm_entries=[], agent_artifacts={}, images=[],
+            result={"x": object()},
+        )

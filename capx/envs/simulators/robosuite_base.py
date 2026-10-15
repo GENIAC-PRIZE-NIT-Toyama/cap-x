@@ -348,8 +348,6 @@ class RobosuiteBaseEnv(FrameBufferMixin, BaseEnv):
             )[::-1]
         self._append_frame(frame[::-1], wrist)  # Flip vertically
 
-        self._thin_frames()
-
     def render(self, mode: str = "rgb_array") -> np.ndarray:  # type: ignore[override]
         if mode != "rgb_array":
             raise ValueError("Only rgb_array render mode is supported")

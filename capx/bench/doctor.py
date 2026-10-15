@@ -82,7 +82,9 @@ def check_server(server_url: str | None) -> list[Check]:
         tasks.raise_for_status()
         names = tasks.json().get("tasks", [])
         checks.append(Check("認証", True, "通った"))
-        checks.append(Check("選べるタスク", True, ", ".join(names)))
+        from capx.remote_env.server.tasks import summarize
+
+        checks.append(Check("選べるタスク", True, summarize(names)))
     except Exception as exc:
         checks.append(Check("認証", False, f"確認できない（{exc}）"))
         return checks
@@ -91,11 +93,14 @@ def check_server(server_url: str | None) -> list[Check]:
         occupancy = _get(f"{base}/sessions", headers).json()
         active, capacity = occupancy["active"], occupancy["capacity"]
         free = capacity - active
+        memory = ""
+        if "memory_used_gb" in occupancy:
+            memory = f"、メモリ {occupancy['memory_used_gb']}/{occupancy['memory_budget_gb']}GB 使用中"
         checks.append(
             Check(
                 "セッションの空き",
                 free > 0,
-                f"{active}/{capacity} 使用中",
+                f"{active}/{capacity} 使用中{memory}",
                 "" if free > 0 else "満員。少し待ってから実行する",
             )
         )

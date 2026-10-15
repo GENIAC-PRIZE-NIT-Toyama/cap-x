@@ -36,6 +36,8 @@ def _get_curobo_api():
     return _curobo_api
 from sklearn.cluster import DBSCAN
 
+from capx.utils.pairwise import any_pair_within
+
 # ------------------------------- Control API ------------------------------
 class FrankaLiberoApi(ApiBase):
     """Robot control helpers for Franka.
@@ -577,16 +579,13 @@ class FrankaLiberoApi(ApiBase):
             
             # Find intersection using numpy broadcasting
             if len(wrist_pts_3d) > 0 and len(agent_pts_3d) > 0:
-                # Compute pairwise distances between all agent and wrist points
-                distances = np.linalg.norm(
-                    agent_pts_3d[:, np.newaxis, :] - wrist_pts_3d[np.newaxis, :, :], 
-                    axis=2
-                )
-                # Find minimum distance for each agent point
-                min_distances = np.min(distances, axis=1)
                 # Keep agent points within threshold
                 threshold = 0.01  # 1cm
-                if min_distances.min() < threshold:
+                # 全ての組の距離を一度に持つと 1 組 64 バイトを使い、worker のメモリ上限を
+                # 超えて落ちていた。同じ式を区切って計算し、1cm 未満の組があるかだけを見る
+                # （capx/utils/pairwise.py。判定の結果は元と同じ）。
+                close = any_pair_within(agent_pts_3d, wrist_pts_3d, threshold)
+                if close:
                     points_3d = np.concatenate([agent_pts_3d, wrist_pts_3d])
                 else:
                     if wrist_score > agent_data["score"]:

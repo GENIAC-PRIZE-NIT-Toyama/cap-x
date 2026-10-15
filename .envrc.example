@@ -9,6 +9,12 @@ export PYROKI_SERVICE_URL=http://127.0.0.1:8116
 export SAM2_SERVICE_URL=http://127.0.0.1:8113
 export OWLVIT_SERVICE_URL=http://127.0.0.1:8117
 
+# 物体を指し示す VLM（Molmo2）。LIBERO の API が、SAM3 で見つからなかったときに使う。
+# remote の backend は、この URL を中継（docker/backend の capx-proxy-molmo）の宛先にし、
+# モデル名を worker に渡す。
+export MOLMO2_VLM_URL=http://10.93.33.1:8000/v1
+export MOLMO2_VLM_MODEL=allenai/Molmo2-8B
+
 # api_servers[] in env_configs YAML no longer carry host/port; the
 # *_SERVICE_URL vars above are the single source of truth for where each
 # perception/motion server lives. By default, launch.py errors out if a

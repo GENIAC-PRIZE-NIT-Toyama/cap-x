@@ -10,6 +10,7 @@ backend は経路に入らない。セッションを作るのは HTTP だが、
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -285,6 +286,9 @@ class RemoteAgentEnv:
         # poll の刻みは heartbeat の間隔と残り時間の短い方。短い timeout を
         # 渡されたのに 1 回目の poll が 15 秒ブロックする、を避ける。
         slice_s = min(HEARTBEAT_INTERVAL_S, deadline)
+        # worker から最後に何か（ping の返事を含む）を受け取った時刻。送れたかどうか
+        # では生死が分からない（SSH の転送などを挟むと、相手が落ちていても送信は成功する）。
+        last_heard = time.monotonic()
         waited = 0.0
         missed_heartbeats = 0
 
@@ -294,6 +298,7 @@ class RemoteAgentEnv:
                 raw = self._socket.recv()
                 reply = protocol.decode(raw)
 
+                last_heard = time.monotonic()
                 if reply.kind == "event":
                     self._handle_event(reply)
                     continue  # ストリームのフレーム。本命の応答を待ち続ける
@@ -310,6 +315,12 @@ class RemoteAgentEnv:
             # heartbeat は「長く待っているとき」だけ。短い呼び出しでは要らない。
             if step_s < HEARTBEAT_INTERVAL_S:
                 continue
+            silent_s = time.monotonic() - last_heard
+            if silent_s >= HEARTBEAT_INTERVAL_S * HEARTBEAT_FAILURES_ALLOWED:
+                raise EnvUnavailable(
+                    f"worker から {silent_s:.0f}s 返事が無い（ping にも答えない）。"
+                    f"落ちたか、接続が切れた（{self._endpoint}）"
+                )
             if not self._ping():
                 missed_heartbeats += 1
                 if missed_heartbeats >= HEARTBEAT_FAILURES_ALLOWED:

@@ -39,7 +39,14 @@ def test_resources_are_capped() -> None:
     cmd = d.run_command(_spec())
     assert _flag_values(cmd, "--memory") == ["4g"]
     assert _flag_values(cmd, "--cpus") == ["2"]
-    assert _flag_values(cmd, "--pids-limit") == ["512"]
+    assert _flag_values(cmd, "--pids-limit") == ["4096"]
+
+
+def test_thread_pools_match_the_allotted_cpus() -> None:
+    """数値計算ライブラリがホストのコア数ぶんスレッドを作らないようにする。"""
+    envs = _flag_values(d.run_command(_spec()), "-e")
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        assert f"{var}=2" in envs
 
 
 def test_primary_network_is_the_internal_one() -> None:
@@ -82,12 +89,13 @@ def test_perception_urls_point_at_the_proxies() -> None:
     assert "SAM3_SERVICE_URL=http://capx-proxy-sam3:8114" in envs
     assert "GRASPNET_SERVICE_URL=http://capx-proxy-graspnet:8115" in envs
     assert "PYROKI_SERVICE_URL=http://capx-proxy-pyroki:8116" in envs
+    assert "MOLMO2_VLM_URL=http://capx-proxy-molmo:8122/v1" in envs
 
 
 def test_proxies_are_connected_to_the_session_network() -> None:
     spec = _spec()
     connects = d.proxy_connect_commands(spec)
-    assert len(connects) == 3
+    assert len(connects) == len(d.PROXIES) == 4
     assert all(c[-2] == spec.network_name for c in connects)
 
 
@@ -237,3 +245,21 @@ def test_the_build_step_strips_oracle_code_from_task_modules(tmp_path, monkeypat
     ns: dict = {}
     exec(out, ns)
     assert ns["Task"].oracle_code is None
+
+
+def test_shared_settings_reach_the_worker() -> None:
+    """Molmo のモデル名など、秘密ではない全体設定を worker に渡す。"""
+    envs = _flag_values(d.run_command(_spec(env={"MOLMO2_VLM_MODEL": "allenai/Molmo2-8B"})), "-e")
+    assert "MOLMO2_VLM_MODEL=allenai/Molmo2-8B" in envs
+
+
+def test_the_molmo_proxy_takes_its_upstream_from_the_same_variable() -> None:
+    """compose の中継の宛先は .envrc と同じ MOLMO2_VLM_URL から作る（二重管理しない）。"""
+    from pathlib import Path
+
+    compose = (Path(__file__).resolve().parent.parent / "docker/backend/docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    block = compose.split("proxy-molmo:", 1)[1]
+    assert "${MOLMO2_VLM_URL" in block
+    assert "MOLMO_UPSTREAM" not in compose

@@ -193,14 +193,6 @@ class FrankaRobosuiteSpillWipeLowLevel(RobosuiteBaseEnv):
 
         return robosuite_obs
 
-    def get_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
-        frames = [frame.copy() for frame in self._frame_buffer]
-        if clear:
-            self._frame_buffer.clear()
-            del self._frame_buffer
-            self._frame_buffer = []
-        return frames
-
     # Override viser update to handle the different obs_cartesian slicing (no gripper in cartesian)
     def _update_viser_server(self) -> None:
         obs = self.get_observation()

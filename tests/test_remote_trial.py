@@ -79,10 +79,13 @@ def worker():
 
 
 def _run(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
+    """保存先を指定しない呼び出しは `--no-save` にする（テストで `remote/outputs/` を汚さない）。"""
     import os
 
     env = {**os.environ, **(env_extra or {})}
     env.pop("CAPX_ENV_SERVER_URL", None) if not env_extra else None
+    if "--output-dir" not in args:
+        args = (*args, "--no-save")
     return subprocess.run(
         [sys.executable, str(TRIAL), *args],
         capture_output=True,
@@ -161,3 +164,47 @@ def test_no_server_configured_says_what_to_set() -> None:
     )
     assert out.returncode != 0
     assert "CAPX_ENV_SERVER_URL" in out.stderr + out.stdout
+
+
+def test_results_go_under_model_task_and_run_time(worker, tmp_path) -> None:
+    """`<保存先>/<モデル名>/<タスク名>/<日時>/trial_01_.../`。
+
+    偽の worker は close で止まる（1 セッション 1 worker）ので、ここでは 1 回だけ実行する。
+    実行ごとに分かれることは下の `_make_run_dir` のテストで見る。
+    """
+    _env, endpoint = worker
+    out = _run(
+        "--agent", str(EXAMPLE), "--endpoint", endpoint,
+        "--model", "vendor/some-model", "--output-dir", str(tmp_path),
+    )
+    assert out.returncode == 0, out.stderr
+
+    runs = list((tmp_path / "vendor_some-model" / "cube_stack").iterdir())
+    assert len(runs) == 1
+    trials = list(runs[0].glob("trial_01_*"))
+    assert len(trials) == 1 and (trials[0] / "result.json").exists()
+    assert str(runs[0]) in out.stdout, "保存先を表示する"
+
+
+def _trial_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("remote_trial", TRIAL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_default_root_is_remote_outputs_wherever_it_is_run_from() -> None:
+    """ローカル実行の `outputs/`（リポジトリ直下）と混ざらない。"""
+    assert _trial_module().DEFAULT_OUTPUT_ROOT == REPO / "remote" / "outputs"
+
+
+def test_each_run_gets_its_own_folder(tmp_path) -> None:
+    """実行ごとに日時のフォルダが分かれ、前の結果と混ざらない。同じ秒でも分かれる。"""
+    make = _trial_module()._make_run_dir
+    first = make(str(tmp_path), "m", "t", now=0)
+    later = make(str(tmp_path), "m", "t", now=60)
+    same_second = make(str(tmp_path), "m", "t", now=0)
+    assert len({first, later, same_second}) == 3
+    assert same_second.name == f"{first.name}_2"

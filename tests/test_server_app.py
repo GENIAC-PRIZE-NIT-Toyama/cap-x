@@ -100,7 +100,9 @@ def test_listing_never_exposes_session_ids(client) -> None:
     ).json()
 
     listing = client.get("/sessions", headers=_auth("tokB")).json()
-    assert listing == {"active": 1, "capacity": 20}
+    assert listing["active"] == 1 and listing["capacity"] == 20
+    assert listing["memory_used_gb"] == 4.0 and listing["memory_budget_gb"] == 100.0
+    assert set(listing) == {"active", "capacity", "memory_used_gb", "memory_budget_gb"}
     assert created["session_id"] not in str(listing)
 
 

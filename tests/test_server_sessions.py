@@ -280,3 +280,95 @@ def test_sessions_take_gpus_in_turn_by_uuid() -> None:
         "NVIDIA_VISIBLE_DEVICES=GPU-bbb" in cmd
         for cmd in docker.ran("docker run", b.spec.container_name)[0]
     )
+
+
+def test_the_worker_gets_the_shared_settings() -> None:
+    docker = FakeDocker()
+    mgr = _manager(docker, prober=_alive, worker_env={"MOLMO2_VLM_MODEL": "m"})
+    session = run(mgr.create("alice", "cube_stack", _client_key()))
+    assert "MOLMO2_VLM_MODEL=m" in docker.ran("docker run", session.spec.container_name)[0]
+
+
+GIB = 1024**3
+
+
+def test_each_runtime_gets_its_own_memory_limit() -> None:
+    docker = FakeDocker()
+    mgr = _manager(docker, prober=_alive)
+
+    async def scenario():
+        return (
+            await mgr.create("a", "cube_stack", _client_key()),
+            await mgr.create("b", "libero_object_3", _client_key()),
+        )
+
+    robosuite, libero = run(scenario())
+    assert robosuite.spec.limits.memory == "4g"
+    assert libero.spec.limits.memory == "5g"
+    run_cmd = docker.ran("docker run", libero.spec.container_name)[0]
+    assert run_cmd[run_cmd.index("--memory") + 1] == "5g"
+    assert mgr.reserved_memory_bytes() == 9 * GIB
+
+
+def test_sessions_beyond_the_memory_budget_are_refused_with_429() -> None:
+    """合計 14GB なら LIBERO 2 つ（5GB ずつ）と robosuite 1 つ（4GB）まで。次は断る。"""
+    docker = FakeDocker()
+    mgr = SessionManager(
+        Config(port_start=19500, port_end=19510, memory_budget_bytes=14 * GIB),
+        runner=docker,
+        prober=_alive,
+    )
+
+    async def scenario():
+        await mgr.create("a", "libero_spatial_0", _client_key())
+        await mgr.create("b", "libero_spatial_1", _client_key())
+        await mgr.create("c", "cube_stack", _client_key())
+        await mgr.create("d", "cube_stack", _client_key())
+
+    with pytest.raises(SessionError) as exc:
+        run(scenario())
+    assert exc.value.status == 429 and "メモリ" in str(exc.value)
+    assert len(mgr.list()) == 3
+    # 断ったセッションのポートは返っている（次に空いたら使える）
+    assert len(docker.ran("docker run")) == 3
+
+
+def test_concurrent_creates_cannot_overshoot_the_budget() -> None:
+    """同時に来ても、空きを二重に数えない（確認と登録の間に待ちを挟まない）。"""
+    docker = FakeDocker()
+    mgr = SessionManager(
+        Config(port_start=19500, port_end=19510, memory_budget_bytes=5 * GIB),
+        runner=docker,
+        prober=_alive,
+    )
+
+    async def scenario():
+        return await asyncio.gather(
+            mgr.create("a", "libero_goal_0", _client_key()),
+            mgr.create("b", "libero_goal_1", _client_key()),
+            return_exceptions=True,
+        )
+
+    results = run(scenario())
+    assert sum(isinstance(r, SessionError) for r in results) == 1
+    assert len(mgr.list()) == 1
+
+
+def test_worker_memory_can_be_overridden_for_measurement(monkeypatch) -> None:
+    import importlib
+
+    from capx.remote_env.server import tasks
+
+    monkeypatch.setenv("CAPX_WORKER_MEMORY_LIBERO", "12g")
+    try:
+        assert importlib.reload(tasks).limits_for("libero").memory == "12g"
+    finally:
+        monkeypatch.delenv("CAPX_WORKER_MEMORY_LIBERO")
+        importlib.reload(tasks)
+
+
+def test_memory_strings_are_read_like_docker_does() -> None:
+    assert dk.memory_bytes("4g") == 4 * GIB
+    assert dk.memory_bytes("512m") == 512 * 1024**2
+    assert dk.memory_bytes("1.5G") == int(1.5 * GIB)
+    assert dk.memory_bytes("2048") == 2048

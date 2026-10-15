@@ -159,8 +159,8 @@ backend は worker に HTTP で話さない。生存確認も、backend 専用�
 `ping` する。だからコンテナが 127.0.0.1 に公開する HTTP ポートは要らない。
 
 ```
-session_id ─┬─ container:  capx-ws-<id>
-            ├─ network:    capx-ws-net-<id>  (--internal)
+session_id ─┬─ container:  capx-w-<id>
+            ├─ network:    capx-net-<id>  (--internal)
             ├─ zmq_port:   19500-19599  → 0.0.0.0 公開（RemoteEnv 用）
             ├─ curve_keys: セッションごとに生成
             └─ last_active → idle 回収
@@ -189,7 +189,12 @@ worker 側は ZAP authenticator で登録済み公開鍵だけを許可する。
 フェースにしてデフォルトルートを持たせないため。ただし **`0.0.0.0` 公開構成での
 再検証が必要**（workshop の "verified on this host" は `127.0.0.1` 公開での検証）。
 
-SAM3 / GraspNet / PyRoKi は `192.168.0.200` の 8114 / 8115 / 8116。コンテナはルートを
+SAM3 / GraspNet / PyRoKi は `192.168.0.200` の 8114 / 8115 / 8116。Molmo2（物体を指し示す VLM。
+LIBERO の API が、SAM3 で見つからなかったときの予備に使う）は `MOLMO2_VLM_URL`（既定
+`http://10.93.33.1:8000/v1`）、モデル名は `MOLMO2_VLM_MODEL`。backend を起動する環境（`.envrc`）に
+置き、compose の中継（`capx-proxy-molmo`）はこの URL から宛先を作り、backend はモデル名を worker に
+渡す。worker には中継の宛先（`http://capx-proxy-molmo:8122/v1`）を渡す。Molmo は環境（ロボットの
+API）の一部なので、LLM（Agent が手元から呼ぶ）と違って worker 側から呼ぶ。コンテナはルートを
 持たないので、固定宛先の `perception-proxy-*`（socat）をそのセッションのネットワークに
 繋いで到達させる。`*_SERVICE_URL` は backend が `docker run` の `-e` で proxy 宛に
 書き換えて注入するので、**参加者はこれらを設定しない**。
@@ -199,7 +204,7 @@ GPU は `--runtime nvidia`（`--gpus` ではない）。
 ### コンテナ制限
 
 ```
---memory 4g  --cpus 2  --pids-limit 512
+--memory 4g  --cpus 2  --pids-limit 4096
 --cap-drop ALL  --security-opt no-new-privileges
 --read-only  --tmpfs /tmp:rw,size=1g  --tmpfs /run:rw,size=16m
 --user 10001:10001  --ulimit nofile=4096:4096  --ulimit core=0
@@ -215,6 +220,9 @@ GPU は `--runtime nvidia`（`--gpus` ではない）。
   `unconfined` にしていないことをテストで押さえている。
 - **image は digest で固定できる。** backend の環境変数 `CAPX_WORKER_IMAGE=capx-worker@sha256:...`。
   未設定なら `capx-worker:latest`。
+- **pids の上限は 4096、数値計算ライブラリのスレッド数は CPU 数（2）に揃える**
+  （`OMP_NUM_THREADS` など）。pids はスレッドも数える。LIBERO の API は JAX で IK を解き、
+  JAX はホストのコア数（64）に合わせてスレッドを作るので、512 では `pthread_create failed` で落ちた。
 - **stdout / stderr は 1 step あたり `Budget.max_output_bytes`（既定 64KB）まで。** 超えた分は
   切り捨てる。コードは `max_code_bytes`（64KB）。
 - **oracle は image に入れない。** `.dockerignore` で `capx/baselines` と
@@ -225,7 +233,40 @@ GPU は `--runtime nvidia`（`--gpus` ではない）。
 コンテナの `docker build` はディスクを使う（worker image は約 12GB、ビルドキャッシュで
 さらに増える）。作り直すときは、先に古い image を消して空きを確保する。
 
-同時セッション数 × 4GB が GPU マシンの RAM を超えないよう、backend に上限セッション数を持たせる。
+**メモリの上限はタスクの種類ごと**（`capx/remote_env/server/tasks.py` の `RUNTIME_MEMORY`）。
+今は robosuite 4GB、LIBERO 5GB。足りなければ backend を起動する環境で
+`CAPX_WORKER_MEMORY_LIBERO=6g` などと上書きする。
+
+**LIBERO の worker がメモリ不足で落ちていた原因と対策。** LIBERO の API の
+`get_object_3d_points_and_masks_from_language`（`capx/integrations/franka/libero.py`）は、全体カメラと
+手首カメラの物体の点群の「全ての組」の距離を一度に計算して、1cm 未満の組が 1 組でもあるかだけを
+見ていた。途中の配列が 1 組 64 バイトを使う（実測）ので、1.2 万点 × 1.2 万点で約 8.7GB になる。
+worker のコンテナはメモリ 4GB に加えてスワップを 4GB 使える（`--memory-swap` を指定しないと Docker は
+同じ量を許す）ので、合計 8GB を超えると OOM で強制終了され、4〜8GB の間ではスワップで極端に遅くなって
+ping に答えられなくなっていた（手元の「45 秒返事が無い」）。
+
+確かめ方: worker のプロセスごとのメモリ（0.2 秒ごと）と、計算の直前・直後に点の数とメモリを出す
+一時的な記録で突き合わせた。4 回の実行の中の 12 回の計算のうち 11 回は「計算前の使用量 ＋ 点の数の
+積 × 64 バイト」と上限（4GB ＋ スワップ 4GB）で結果（OOM 4 回、スワップで完了 7 回）を説明できる。
+OOM の 5 回はすべてこの計算の最中に起きた（残る 1 回は 8GB の手前で落ちた理由が未確認。カーネルの
+ログを読む権限が無い）。
+
+対策: 同じ式を一方の点群を区切りながら計算し、見つかった時点で打ち切る（`capx/utils/pairwise.py`。
+途中の配列は 256MB まで）。各組の距離は元と同じ演算なので、判定の結果は元と変わらない
+（`tests/test_pairwise.py`）。直したあとの同じ 4 回では OOM も「45 秒返事が無い」も無く、worker の
+最大は 3.8GB だった（元の式なら 8.7GB を使う 1.2 万点 × 1.2 万点でも、計算の前後で増えない）。
+ただし起動後に 3.4GB 前後を使う回があり、4GB では余裕が 300MB 程度しかないので、LIBERO の上限は
+5GB にした。
+
+途中で、点群のノイズ除去（scikit-learn の DBSCAN）を疑って置き換えたが、実際の LIBERO の物体の点群は
+最大でも 1.8 万点弱で、DBSCAN は数十 MB しか使っていなかった。原因ではなかったので、元に戻した。
+cap-x-workshop も LIBERO の worker は 4GB で、この計算には手を入れていない（落ちたら作り直してもらう運用）。
+
+**受け付けはメモリの合計で制限する。** 使用中のセッションの上限の和 ＋ 新しいセッションの上限が
+`--memory-budget-gb`（既定 100GB。GPU マシンの 125GB から OS・backend・中継の分を残す）を
+超えるなら 429 で断る。数の上限（`--max-sessions`、既定 20）も別に効く。確認と登録の間に
+await を挟まないので、同時に来た作成が空きを二重に数えることはない。`GET /sessions` は
+使用中の数・メモリと、それぞれの上限を返す（`doctor.py` が表示する）。
 
 ## 5. 公平性とセキュリティ
 
@@ -323,12 +364,14 @@ GPU マシン側の操作が途絶えるので、backend の idle 回収がコ�
 **`truncated` の判定は `step(code)` が終わってからなので、1 回の `step()` の中で無限
 ループするとバッファが青天井に伸びる。**
 
-対策: **上限 900MB（全カメラ合計の byte budget）。超過時は間引き率を倍にする**
+対策: **上限 400MB（全カメラ合計の byte budget、JPEG のバイト数で数える）。超過時は間引き率を倍にする**
 （バッファを 1 つ飛ばしで半分に間引き、以降の `_subsample_rate` を 5 → 10 に上げる）。
 記録停止は結末を、リングバッファは冒頭を失うが、間引きならエピソード全体が残る。
 
-枚数ではなく byte で持つのは、解像度が simulator で違うため。
-900MB は Robosuite で 1200 枚相当（wrist 併用で 600 枚）、LIBERO で 768 枚相当（同 384 枚）。
+枚数ではなく byte で持つのは、解像度が simulator で違うため。上限は当初 900MB（生の画像で数えて
+Robosuite 1200 枚、LIBERO 768 枚）だったが、LIBERO で worker が 4GB を超えて強制終了されたため、
+フレームを JPEG で持つことにし（下記）、上限も 400MB に下げた。JPEG（品質 90）は 1 枚 30KB 前後
+（cube_stack の実測、512×512）なので、400MB でも数千枚持て、間引きはほとんど起きない。
 
 間引きは `turn_frame_ranges` を壊す。フレームに `seq` / `sim_step` / `turn_id` / `camera`
 を持たせ、index ではなく `turn_id` で引く。各 turn の先頭と末尾のフレームは pin する。
@@ -337,8 +380,20 @@ GPU マシン側の操作が途絶えるので、backend の idle 回収がコ�
 `sim_step`、effective sampling rate の変更履歴、original / retained / dropped の枚数を
 成果物 metadata に記録する。
 
-バッファは生の numpy のまま保持し、**JPEG 化は送信時のみ**。mp4 書き出しでデコード・
-再エンコードが挟まらず、リプレイ画質が落ちない。
+**バッファは JPEG（品質 90）で保持する**（`capx/utils/frame_buffer.py`）。当初は「生の numpy の
+まま保持し、JPEG 化は送信時のみ」として、リプレイ画質を優先していた。LIBERO（800×512）で、生の
+フレームと、シミュレータ・JAX（IK）・生成コード用のプロセスを合わせて worker が 4GB を超え、OOM で
+強制終了された（Docker の `oom` イベント、終了コード 137）。cap-x-workshop も同じ理由で同じ対策をして
+いる。受け入れること:
+
+- 動画は JPEG を経由するぶん、わずかに画質が落ちる（見返す用途には十分）。
+- 録るたびに JPEG に変換する時間（1 枚 0.5〜1 ミリ秒程度）が step に加わり、`execution_time_s` に含まれる。
+
+取り出すときは画像の配列に戻すので、呼び出し側の扱いは変わらない。手元 PC に届くもの（`render()` の
+JPEG、ターン動画の mp4、ストリームの JPEG）とプロトコルも変わらない。worker のターン動画は
+`iter_video_frames_range()` で 1 枚ずつ戻して書く（まとめて戻すと、生の画像が一度に並んで、節約した
+メモリを取り出しの時点で使ってしまう）。ローカル実行の試行全体の動画は、メモリ上限が無いので
+まとめて戻している。
 
 depth はバッファに入らない（`_record_frame()` は `depth=False`）。観測 dict 側にあり、
 step ごとに置き換わるので累積しない。depth や segmentation を Agent に送る場合は
@@ -405,6 +460,27 @@ local モードは従来どおり 1 venv 1 simulator。
 
 `cap-x-workshop` の main（`6fa890a`）にこの構造が既に入っているので、LIBERO 対応は
 ゼロから作るのではなく**移植**になる。
+
+**実装（Phase 6）:**
+
+- 許可リスト（`capx/remote_env/server/tasks.py`）に、LIBERO の標準 5 suite（`libero_spatial` /
+  `libero_object` / `libero_goal` / `libero_10` / `libero_90`）の全 130 タスクを `<suite>_<番号>`
+  の名前で載せる。LIBERO-PRO の派生 suite（`*_with_mug` / `*_swap` / `*_ood` など）は含めない。
+- 設定ファイルはタスクごとに作らない。1 本の設定（`env_configs/libero/franka_libero_spatial_0.yaml`）
+  に、suite 名とタスク番号を **backend の許可リストの値で上書き**して worker に渡す
+  （`--override env.cfg.low_level.suite_name=... env.cfg.low_level.task_id=...`）。クライアントからは
+  受けない。途中のキーが無い上書きはエラーにする（打ち間違いで黙って新しいキーを作らない）。
+- image は `docker/worker/Dockerfile.libero`（`uv sync --extra libero`）。`.dockerignore` は
+  Dockerfile ごとなので別ファイル（`Dockerfile.libero.dockerignore`）。LIBERO は初回の import で
+  データの置き場所を対話で聞くので、ビルド時に設定ファイルを作っておく（`LIBERO_CONFIG_PATH=/app/.libero`）。
+  制限（非 root、read-only、oracle の除去）は robosuite 用と同じ。image 名は
+  `CAPX_WORKER_IMAGE_LIBERO`（既定 `capx-worker-libero:latest`）。
+- ゴール文 `{libero_environment_goal}` は `CodeExecutionEnvBase.reset()` で実際の文に置き換える
+  （`handle.task_language`）。`TaskSpec.instruction` にも実際の文が入る。旧来の
+  `_patch_libero_goal`（`capx/envs/trial.py`）は置き換え済みの文を見て何もしない。
+- 録画バッファは robosuite と同じ `FrameBufferMixin`（JPEG で持ち、400MB の上限と間引きが効く）。
+  カメラ名は `save_camera_name = "agentview"` / `render_camera_names = ["agentview"]`、手首は
+  `robot0_eye_in_hand`。
 
 ```python
 # workshop/backend/config.py
@@ -525,9 +601,14 @@ steps_used     : 3
 参加者はこれを見て Agent を直し、また回す。このループは Bench から人間への一方向なので、
 生成コードに正解を渡すことなく成立する。
 
-### 成果物（`--output-dir`）
+### 成果物（`remote/outputs/`）
 
-試行ごとのフォルダ `trial_01_sandboxrc_0_reward_1.000_taskcompleted_1/` に、Local と同じ
+既定の置き場所は `remote/outputs/<モデル名>/<タスク名>/<実行した日時>/`（`trial.py` のある場所が
+基準なので、どこから実行しても同じ）。ローカル実行の `outputs/`（リポジトリ直下）とは分け、実行ごとに
+日時のフォルダを作るので前の結果と混ざらない（同じ秒なら `_2` を付ける）。モデル名の `/` は `_` に
+する（ローカルと同じ）。`--output-dir` で置き場所を変え、`--no-save` で保存しない。
+
+その下の試行ごとのフォルダ `trial_01_sandboxrc_0_reward_1.000_taskcompleted_1/` に、Local と同じ
 構成で書く。Remote でも同じ名前の場所に同じ種類のものが入る。
 
 | 場所 | 中身 |
@@ -548,7 +629,7 @@ steps_used     : 3
 - Remote の動画は `step(capture_video=True)` の mp4 をクライアントが控えて書く。
   `record_video` のときは Agent の指定に関わらず毎ステップ受け取る（worker のエンコードは
   `execution_time_s` に含まない）。ターン動画は再エンコードせずにつなぐ。
-- `--output-dir` を付けたとき `record_video` は既定で有効。付けなければ何も書かない。
+- 保存するとき `record_video` は既定で有効（`--record-video False` で切る）。`--no-save` なら何も書かない。
 
 ### 動かないとき
 
@@ -802,10 +883,10 @@ uv run --no-sync --active tests/test_environments.py \
 
 決めていないことは無い。実機で確かめていないものと、対象外のものを挙げる。
 
-- 間引きが実機で発動する長さ（900MB 超）の試行。ロジックは手元のテストで確認済み。
+- 間引きが実機で発動する長さ（JPEG で 400MB 超）の試行。ロジックは手元のテストで確認済み。
 - ストリーミングを実 worker で購読すること、`doctor.py` の実機実行。
-- 録画バッファの間引きは robosuite 基底のみ。handover / two_arm_lift / LIBERO は自前実装のまま。
+- 録画バッファの上限と間引きは robosuite 基底と LIBERO のみ。handover / two_arm_lift・実機・BEHAVIOR は自前実装のまま。
 - 各フレームへの `sim_step` の記録と、間引き時の事前確保（一時的なメモリ増を避ける工夫）は未実装。
 - seed が robosuite の初期配置まで届かない件（§12）。
 - ネットワーク隔離の `0.0.0.0` 公開構成での実測（Phase 0A-4）。
-- Phase 6（LIBERO）、Phase 7（BEHAVIOR）。
+- Phase 7（BEHAVIOR）。進捗と残りの作業は `CAPX_AGENT_SEPARATION.md` にまとめている。

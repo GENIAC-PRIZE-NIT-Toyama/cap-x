@@ -32,6 +32,7 @@ def main(
     seed: int | None = None,
     model: str = os.environ.get("OPENAI_BASE_MODEL", ""),
     output_dir: str | None = None,
+    save: bool = True,
     record_video: bool | None = None,
     endpoint: str | None = None,
 ) -> None:
@@ -43,10 +44,13 @@ def main(
         total_trials: 試行回数。
         seed: 初期配置の seed。省略すると試行番号（1 始まり）。
         model: LLM のモデル名。省略すると環境変数 OPENAI_BASE_MODEL。
-        output_dir: 結果の保存先。試行ごとのフォルダに、実行したコード・ログ・
-            LLM の入出力・動画・画像・result.json が入る。
-        record_video: 動画を受け取って保存する。省略すると、output_dir を指定した
-            ときだけ保存する（動画の書き出しで各ステップが少し長くなる）。
+        output_dir: 結果を置く場所。省略すると `remote/outputs/`（どこから実行しても同じ）。
+            その下の `<モデル名>/<タスク名>/<実行した日時>/` に、試行ごとのフォルダ
+            （実行したコード・ログ・LLM の入出力・動画・画像・result.json）を作る。
+            実行ごとに日時のフォルダが分かれるので、前の結果と混ざらない。
+        save: `--no-save` で結果を保存しない。
+        record_video: 動画を受け取って保存する。省略すると、結果を保存するときは保存する
+            （動画の書き出しで各ステップが少し長くなる）。
         endpoint: worker に直接つなぐ（`tcp://host:19500`）。通常は使わない。
     """
     agent_path = _resolve_agent(agent)
@@ -65,11 +69,12 @@ def main(
     except Exception as exc:
         sys.exit(str(explain_load(exc, str(agent_path))))
 
+    run_dir = _make_run_dir(output_dir, model, task) if save else None
+    if run_dir:
+        print(f"保存先: {run_dir}")
     if record_video is None:
-        record_video = bool(output_dir)
-    config = {"output_dir": output_dir, "record_video": record_video}
-    if output_dir:
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        record_video = save
+    config = {"output_dir": str(run_dir) if run_dir else None, "record_video": record_video}
     meta = {"agent_spec": str(agent_path), "model": model, "endpoint_task": task}
 
     holder = {"env": _connect(endpoint, server_url, task, record_video)}
@@ -125,6 +130,29 @@ def _run_with_retries(holder, runner, trial, config, seed, meta, reconnect, slee
             holder["env"].close()
             sleep(wait_s)
             holder["env"] = reconnect()
+
+
+#: 結果の既定の置き場所。ローカル実行の `outputs/`（リポジトリ直下）とは分ける。
+DEFAULT_OUTPUT_ROOT = HERE / "outputs"
+
+
+def _make_run_dir(root: str | None, model: str, task: str, now: float | None = None) -> Path:
+    """`<root>/<モデル名>/<タスク名>/<日時>/` を作って返す。
+
+    モデル名の `/` は `_` にする（ローカル実行と同じ）。同じ秒に 2 回実行したときは
+    `_2` などを付けて、前の結果に重ねない。
+    """
+    base = (Path(root) if root else DEFAULT_OUTPUT_ROOT) / (model.replace("/", "_") or "model_unset") / task
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+    base.mkdir(parents=True, exist_ok=True)
+    for n in range(1, 1000):
+        run_dir = base / (stamp if n == 1 else f"{stamp}_{n}")
+        try:
+            run_dir.mkdir()
+            return run_dir
+        except FileExistsError:
+            continue
+    raise RuntimeError(f"保存先を作れない: {base / stamp}")
 
 
 def _resolve_agent(spec: str) -> Path:
