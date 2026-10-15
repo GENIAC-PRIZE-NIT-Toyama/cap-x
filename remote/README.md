@@ -58,7 +58,9 @@ LLM は手元から直接呼ぶ（`OPENAI_BASE_URL`）。GPU マシンからは�
 実行が終わると `task_completed` と `reward` が表示される。
 Agent の中からは見えない（`env.step()` が返すのは stdout / stderr だけ）。
 
-`--output-dir results` を付けると、試行ごとのフォルダに次が保存される。
+結果は `remote/outputs/<モデル名>/<タスク名>/<実行した日時>/` に保存される（どこから実行しても同じ。
+実行ごとにフォルダが分かれる）。置き場所は `--output-dir` で変えられ、`--no-save` で保存しない。
+試行ごとのフォルダ（`trial_01_.../`）に次が入る。
 
 | 場所 | 中身 |
 |---|---|

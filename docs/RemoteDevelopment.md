@@ -601,9 +601,14 @@ steps_used     : 3
 参加者はこれを見て Agent を直し、また回す。このループは Bench から人間への一方向なので、
 生成コードに正解を渡すことなく成立する。
 
-### 成果物（`--output-dir`）
+### 成果物（`remote/outputs/`）
 
-試行ごとのフォルダ `trial_01_sandboxrc_0_reward_1.000_taskcompleted_1/` に、Local と同じ
+既定の置き場所は `remote/outputs/<モデル名>/<タスク名>/<実行した日時>/`（`trial.py` のある場所が
+基準なので、どこから実行しても同じ）。ローカル実行の `outputs/`（リポジトリ直下）とは分け、実行ごとに
+日時のフォルダを作るので前の結果と混ざらない（同じ秒なら `_2` を付ける）。モデル名の `/` は `_` に
+する（ローカルと同じ）。`--output-dir` で置き場所を変え、`--no-save` で保存しない。
+
+その下の試行ごとのフォルダ `trial_01_sandboxrc_0_reward_1.000_taskcompleted_1/` に、Local と同じ
 構成で書く。Remote でも同じ名前の場所に同じ種類のものが入る。
 
 | 場所 | 中身 |
@@ -624,7 +629,7 @@ steps_used     : 3
 - Remote の動画は `step(capture_video=True)` の mp4 をクライアントが控えて書く。
   `record_video` のときは Agent の指定に関わらず毎ステップ受け取る（worker のエンコードは
   `execution_time_s` に含まない）。ターン動画は再エンコードせずにつなぐ。
-- `--output-dir` を付けたとき `record_video` は既定で有効。付けなければ何も書かない。
+- 保存するとき `record_video` は既定で有効（`--record-video False` で切る）。`--no-save` なら何も書かない。
 
 ### 動かないとき
 
