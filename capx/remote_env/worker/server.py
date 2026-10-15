@@ -31,12 +31,6 @@ logger = logging.getLogger("capx.worker")
 #: 実行スレッドの結果を待つ間、I/O ループが回る間隔。
 POLL_MS = 100
 
-#: 調査用。`CAPX_DEBUG_PING=1` のとき、I/O ループが `STALL_DUMP_S` 秒回らなかったら
-#: 全スレッドの実行箇所を stderr（docker logs）に出す。faulthandler は GIL を取らずに
-#: 書き出すので、計算中のライブラリが GIL を握ったままでも、どこで止まっているかが分かる。
-DEBUG_PING = os.environ.get("CAPX_DEBUG_PING") == "1"
-STALL_DUMP_S = 20
-
 #: 再送に備えて覚えておく応答の数。
 DONE_CACHE_SIZE = 16
 
@@ -241,17 +235,8 @@ class WorkerServer:
         poller = zmq.Poller()
         poller.register(socket, zmq.POLLIN)
 
-        if DEBUG_PING:
-            import faulthandler
-            import sys
-
-            logger.info("CAPX_DEBUG_PING: I/O ループが %ds 止まったら全スレッドを書き出す", STALL_DUMP_S)
-
         try:
             while not self._stop.is_set():
-                if DEBUG_PING:
-                    # 毎周、書き出しの予約をやり直す（前の予約は取り消される）
-                    faulthandler.dump_traceback_later(STALL_DUMP_S, file=sys.stderr)
                 # 実行スレッドからの結果を先に流す
                 while True:
                     try:
@@ -278,10 +263,6 @@ class WorkerServer:
                 if reply is not None:
                     socket.send_multipart([identity, protocol.encode(reply)])
         finally:
-            if DEBUG_PING:
-                import faulthandler
-
-                faulthandler.cancel_dump_traceback_later()
             self._stop.set()
             socket.close()
             if authenticator is not None:
@@ -298,8 +279,6 @@ class WorkerServer:
         # ping は env を触らないので、step の最中でも即答できる。
         # これが返らないと backend に「死んだ」と誤判定される。
         if msg.operation == "ping":
-            if DEBUG_PING:
-                logger.info("ping recv id=%s busy=%s", msg.request_id[:8], self._busy)
             # backend が idle 回収に使う。step の最中は busy なので回収されない。
             return protocol.response(
                 msg,

@@ -10,8 +10,6 @@ backend は経路に入らない。セッションを作るのは HTTP だが、
 from __future__ import annotations
 
 import logging
-import os
-import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -36,14 +34,6 @@ HEARTBEAT_INTERVAL_S = 15.0
 
 #: heartbeat が続けて失敗してよい回数。
 HEARTBEAT_FAILURES_ALLOWED = 3
-
-#: 調査用。`CAPX_DEBUG_PING=1` のとき、送受信と ping の時刻を stderr に出す。
-DEBUG_PING = os.environ.get("CAPX_DEBUG_PING") == "1"
-
-
-def _trace(started: float, text: str) -> None:
-    if DEBUG_PING:
-        print(f"[ping {time.monotonic() - started:7.2f}s] {text}", file=sys.stderr, flush=True)
 
 
 class RemoteAgentEnv:
@@ -290,9 +280,7 @@ class RemoteAgentEnv:
         self._sequence += 1
         message = protocol.request(operation, session_id=self._session_id, **payload)
         message.sequence = self._sequence
-        started = time.monotonic()
         self._send(message)
-        _trace(started, f"send {operation} id={message.request_id[:8]}")
 
         deadline = timeout_s or self._timeout_s
         # poll の刻みは heartbeat の間隔と残り時間の短い方。短い timeout を
@@ -311,7 +299,6 @@ class RemoteAgentEnv:
                 reply = protocol.decode(raw)
 
                 last_heard = time.monotonic()
-                _trace(started, f"recv {reply.kind}/{reply.operation} id={reply.request_id[:8]}")
                 if reply.kind == "event":
                     self._handle_event(reply)
                     continue  # ストリームのフレーム。本命の応答を待ち続ける
@@ -329,7 +316,6 @@ class RemoteAgentEnv:
             if step_s < HEARTBEAT_INTERVAL_S:
                 continue
             silent_s = time.monotonic() - last_heard
-            _trace(started, f"no message for {silent_s:.1f}s (waited {waited:.1f}s)")
             if silent_s >= HEARTBEAT_INTERVAL_S * HEARTBEAT_FAILURES_ALLOWED:
                 raise EnvUnavailable(
                     f"worker から {silent_s:.0f}s 返事が無い（ping にも答えない）。"
@@ -370,10 +356,7 @@ class RemoteAgentEnv:
         from capx.remote_env import protocol
 
         try:
-            ping = protocol.request("ping")
-            self._send(ping)
-            if DEBUG_PING:
-                print(f"[ping] sent ping id={ping.request_id[:8]}", file=sys.stderr, flush=True)
+            self._send(protocol.request("ping"))
             return True
         except EnvUnavailable:
             return False
