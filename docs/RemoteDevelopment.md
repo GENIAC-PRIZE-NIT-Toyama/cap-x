@@ -233,17 +233,20 @@ GPU は `--runtime nvidia`（`--gpus` ではない）。
 コンテナの `docker build` はディスクを使う（worker image は約 12GB、ビルドキャッシュで
 さらに増える）。作り直すときは、先に古い image を消して空きを確保する。
 
-**メモリの上限はタスクの種類ごと**（`capx/remote_env/server/tasks.py` の `RUNTIME_MEMORY`）:
+**メモリの上限はタスクの種類ごと**（`capx/remote_env/server/tasks.py` の `RUNTIME_MEMORY`）。
+今は robosuite・LIBERO とも 4GB。足りなければ backend を起動する環境で
+`CAPX_WORKER_MEMORY_LIBERO=6g` などと上書きする。
 
-| 種類 | 上限 | 理由 |
-| --- | --- | --- |
-| robosuite | 4GB | 通常の使用量に余裕がある |
-| LIBERO | 8GB（仮。測定して決める） | step 中の普段の使用量が約 2.6GB。API の中の点群のノイズ除去（DBSCAN）が、点の数の 2 乗に近い勢いで一時的にメモリを使い、4GB では強制終了された（合成データの測定で 12 万点 +0.65GB、24 万点 +2.5GB） |
-
-測るときは backend を起動する環境で `CAPX_WORKER_MEMORY_LIBERO=12g` などと上書きする。
-DBSCAN の前に点群を間引けば膨らまないが、GraspNet が物体の上の把持を選ぶ判定（接触点が物体の
-点群の 0.1mm 以内）に、元の密度の点群が要る。元の cap-x の LIBERO と同じ動作を保つため、
-計算は変えずに上限を上げることにした。
+**LIBERO の点群のノイズ除去は、DBSCAN と同じ判定を少ないメモリで計算する**
+（`capx/utils/noise_filter.py`）。LIBERO の API の `filter_noise` は scikit-learn の DBSCAN の
+「ノイズかどうか」だけを使うが、DBSCAN は全ての点の近傍の一覧を一度に並べるので、物体に近づいて
+点が密になると点の数の 2 乗に近い勢いでメモリを使い（24 万点で +2.6GB）、上限 12GB でも
+強制終了された回があった。KD 木で近傍を「数えるだけ」にすると、同じ判定で +36MB・時間は半分以下
+（合成データ）。点を間引かないので、GraspNet に渡す点群は変わらない（間引くと、GraspNet が
+物体の上の把持を選ぶ判定＝接触点が物体の点群の 0.1mm 以内、に影響する）。DBSCAN と 1 点も
+違わないことを `tests/test_noise_filter.py` で確かめている（格子状の点群を含む）。実データでの
+一致は `CAPX_CHECK_NOISE_FILTER=1` で worker に両方を計算させて確かめる。cap-x-workshop は
+この点に手を入れていない（落ちたら作り直してもらう運用）。
 
 **受け付けはメモリの合計で制限する。** 使用中のセッションの上限の和 ＋ 新しいセッションの上限が
 `--memory-budget-gb`（既定 100GB。GPU マシンの 125GB から OS・backend・中継の分を残す）を
