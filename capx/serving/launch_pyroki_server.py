@@ -4,6 +4,7 @@ import asyncio
 import functools
 import json
 import logging
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, List
@@ -207,6 +208,31 @@ class PlanResponse(BaseModel):
     dt: float
 
 
+class IkRestRequest(BaseModel):
+    """IK with a rest cost, for a robot from ``_URDF_ROBOTS`` picked per request."""
+
+    robot: str
+    target_link: str
+    target_pose_wxyz_xyz: list[float]  # length 7 (wxyz + xyz)
+    initial_q: list[float]  # actuated joints, in ``joint_names`` order
+    rest_cost_weights: dict[str, float] = {}  # joint name -> weight; others get 1.0
+
+
+class IkRestResponse(BaseModel):
+    joint_positions: list[float]
+    joint_names: list[str]
+
+
+class FkRequest(BaseModel):
+    robot: str
+    joint_positions: list[float]
+
+
+class FkResponse(BaseModel):
+    link_poses_wxyz_xyz: list[list[float]]  # one per link, in ``link_names`` order
+    link_names: list[str]
+
+
 # =====================================================
 # INTERNAL HELPERS
 # =====================================================
@@ -288,6 +314,33 @@ def init_pyroki_server(
     _TARGET_LINK = target_link_name
 
     logger.info("PyRoki loaded and ready!")
+
+
+# Robots served from a URDF in this repo, on top of the Panda loaded at startup.
+# Clients pick one per request, so one server (one PYROKI_SERVICE_URL) covers
+# every simulator. Only kinematics are used, so meshes are not loaded.
+_URDF_ROBOTS: dict[str, Path] = {
+    # BEHAVIOR R1Pro with the wheel and gripper joints fixed: 4 torso + 2x7 arm joints.
+    "r1pro": Path(__file__).parent / "assets" / "r1pro_ik.urdf",
+}
+_URDF_ROBOTS_LOCK = threading.Lock()
+
+
+@lru_cache(maxsize=None)
+def _load_urdf_robot(name: str) -> pk.Robot:
+    import yourdfpy
+
+    logger.info(f"Loading robot '{name}' from {_URDF_ROBOTS[name]}...")
+    urdf = yourdfpy.URDF.load(_URDF_ROBOTS[name], load_meshes=False, load_collision_meshes=False)
+    return pk.Robot.from_urdf(urdf)
+
+
+def _get_urdf_robot(name: str) -> pk.Robot:
+    if name not in _URDF_ROBOTS:
+        raise HTTPException(404, f"Unknown robot '{name}'. Known: {', '.join(_URDF_ROBOTS)}")
+    # Requests run on executor threads; load each robot once.
+    with _URDF_ROBOTS_LOCK:
+        return _load_urdf_robot(name)
 
 
 # =====================================================
@@ -372,6 +425,55 @@ async def plan_motion(req: PlanRequest):
     except Exception as e:
         logger.exception("Planning failure")
         raise HTTPException(500, f"Motion planning failed: {e}")
+
+
+def _do_solve_ik_rest(robot: pk.Robot, req: IkRestRequest) -> IkRestResponse:
+    """Blocking rest-cost IK solve (CPU-bound)."""
+    names = list(robot.joints.actuated_names)
+    unknown = set(req.rest_cost_weights) - set(names)
+    if unknown:
+        raise ValueError(f"Unknown joints in rest_cost_weights: {sorted(unknown)}")
+    if len(req.initial_q) != len(names):
+        raise ValueError(f"initial_q has {len(req.initial_q)} values, robot has {len(names)} joints")
+    pose = np.asarray(req.target_pose_wxyz_xyz, dtype=np.float64)
+    q = pks.solve_ik_rest(
+        robot=robot,
+        target_link_name=req.target_link,
+        target_wxyz=pose[:4],
+        target_position=pose[4:],
+        rest_cost_weights=np.array([req.rest_cost_weights.get(n, 1.0) for n in names]),
+        initial_q=np.asarray(req.initial_q, dtype=np.float64),
+    )
+    return IkRestResponse(joint_positions=list(map(float, q)), joint_names=names)
+
+
+@app.post("/ik_rest", response_model=IkRestResponse)
+async def solve_ik_rest(req: IkRestRequest):
+    robot = _get_urdf_robot(req.robot)
+    if req.target_link not in robot.links.names:
+        raise HTTPException(400, f"Unknown link '{req.target_link}' for robot '{req.robot}'")
+    try:
+        return await _run_in_thread(_do_solve_ik_rest, robot, req)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception("IK failed")
+        raise HTTPException(500, f"IK solve failed: {e}")
+
+
+@app.post("/fk", response_model=FkResponse)
+async def forward_kinematics(req: FkRequest):
+    robot = _get_urdf_robot(req.robot)
+    if len(req.joint_positions) != robot.joints.num_actuated_joints:
+        raise HTTPException(
+            400,
+            f"joint_positions has {len(req.joint_positions)} values, "
+            f"robot has {robot.joints.num_actuated_joints} joints",
+        )
+    poses = await _run_in_thread(
+        lambda: np.asarray(robot.forward_kinematics(np.asarray(req.joint_positions, dtype=np.float64)))
+    )
+    return FkResponse(link_poses_wxyz_xyz=poses.tolist(), link_names=list(robot.links.names))
 
 
 # =====================================================

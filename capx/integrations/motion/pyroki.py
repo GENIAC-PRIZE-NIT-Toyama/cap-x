@@ -52,6 +52,56 @@ def init_pyroki(
     # PLANNING WRAPPER
     # =====================================================
 
+def init_pyroki_ik_rest(
+    robot: str,
+    rest_cost_weights: dict[str, float] | None = None,
+    server_url: str = DEFAULT_URL,
+) -> Callable[..., np.ndarray]:
+    """Rest-cost IK for a URDF robot served by the PyRoKi server (e.g. "r1pro").
+
+    The returned function takes the target link, the target pose and the
+    current actuated joint positions (server's joint order) and returns the
+    solved actuated joint positions in the same order.
+    """
+    server_url = server_url.rstrip("/")
+    weights = dict(rest_cost_weights or {})
+
+    def ik_rest_fn(
+        target_link: str,
+        target_wxyz: np.ndarray,
+        target_position: np.ndarray,
+        initial_q: np.ndarray,
+    ) -> np.ndarray:
+        payload = {
+            "robot": robot,
+            "target_link": target_link,
+            "target_pose_wxyz_xyz": [*map(float, target_wxyz), *map(float, target_position)],
+            "initial_q": [float(q) for q in initial_q],
+            "rest_cost_weights": weights,
+        }
+        # The first call per robot includes the JIT compile on the server.
+        data = post_with_retries(f"{server_url}/ik_rest", payload, timeout_seconds=60.0)
+        return np.asarray(data["joint_positions"], dtype=np.float64)
+
+    return ik_rest_fn
+
+
+def init_pyroki_fk(robot: str, server_url: str = DEFAULT_URL) -> Callable[[np.ndarray], np.ndarray]:
+    """Forward kinematics for a URDF robot served by the PyRoKi server.
+
+    The returned function maps actuated joint positions to an (num_links, 7)
+    array of wxyz_xyz link poses, like ``pk.Robot.forward_kinematics``.
+    """
+    server_url = server_url.rstrip("/")
+
+    def fk_fn(joint_positions: np.ndarray) -> np.ndarray:
+        payload = {"robot": robot, "joint_positions": [float(q) for q in joint_positions]}
+        data = post_with_retries(f"{server_url}/fk", payload, timeout_seconds=60.0)
+        return np.asarray(data["link_poses_wxyz_xyz"], dtype=np.float64)
+
+    return fk_fn
+
+
 def init_pyroki_trajopt(
     server_url: str = DEFAULT_URL,
 ) -> None:
