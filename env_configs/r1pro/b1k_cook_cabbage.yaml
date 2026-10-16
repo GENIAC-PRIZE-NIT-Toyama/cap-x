@@ -22,6 +22,9 @@ api_servers:
 
   - _target_: capx.serving.launch_contact_graspnet_server.main
 
+  # R1Pro IK (solve_ik) runs on the PyRoKi server
+  - _target_: capx.serving.launch_pyroki_server.main
+
 record_video: true
 output_dir: ./outputs/b1k_cook_cabbage
 

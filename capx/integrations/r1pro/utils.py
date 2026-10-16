@@ -7,8 +7,6 @@ import numpy as np
 from scipy.spatial import ConvexHull
 import numpy.typing as npt
 import omnigibson.utils.transform_utils as T
-from omnigibson import ROBOT_ASSETS_ROOT
-print(ROBOT_ASSETS_ROOT)
 
 def relative_pose_transform(pos1, quat1, pos0, quat0):
     """

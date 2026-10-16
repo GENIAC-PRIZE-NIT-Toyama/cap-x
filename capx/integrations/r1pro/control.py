@@ -14,11 +14,10 @@ from capx.envs.base import (
     BaseEnv,
 )
 from capx.envs.simulators.r1pro_b1k import R1ProBehaviourLowLevel
-from capx.integrations.motion import pyroki_snippets as pks  # type: ignore
 from capx.integrations.base_api import ApiBase
 from capx.integrations.vision.graspnet import init_contact_graspnet
 from capx.integrations.vision.owlvit import init_owlvit
-from capx.integrations.motion.pyroki import init_pyroki
+from capx.integrations.motion.pyroki import init_pyroki_fk, init_pyroki_ik_rest
 
 # from capx.integrations.motion.pyroki_context import get_pyroki_context  # type: ignore
 from capx.integrations.vision.sam2 import init_sam2
@@ -35,12 +34,9 @@ import numpy.typing as npt
 from capx.integrations.r1pro.utils import *
 
 
-from capx.integrations.motion import pyroki_snippets as pks
-from capx.integrations.motion.pyroki_context import get_pyroki_context  # type: ignore
 from viser.extras import ViserUrdf
 import os
 from capx.utils.video_utils import _write_video
-import jax.numpy as jnp
 
 # pyroki:
 # ('torso_joint1', 'torso_joint2', 'torso_joint3', 'torso_joint4', 'left_arm_joint1', 'left_arm_joint2', 'left_arm_joint3', 'left_arm_joint4', 'left_arm_joint5', 'left_arm_joint6', 'left_arm_joint7', 'right_arm_joint1', 'right_arm_joint2', 'right_arm_joint3', 'right_arm_joint4', 'right_arm_joint5', 'right_arm_joint6', 'right_arm_joint7')
@@ -139,18 +135,13 @@ class R1ProControlApi(ApiBase):
         self.cfg = None
         
         self._TCP_OFFSET = np.array([0.0, 0.2, 0.0], dtype=np.float64)
-        ctx = get_pyroki_context(os.path.join(ROBOT_ASSETS_ROOT, "models/r1pro/urdf/r1pro_ik.urdf"), target_link_name="left_gripper_link")
-        self._pks = pks
-        self._robot = ctx.robot
-        torso_1_joint_idx = self._robot.joints.actuated_names.index("torso_joint1")
-        torso_2_joint_idx = self._robot.joints.actuated_names.index("torso_joint2")
-        torso_3_joint_idx = self._robot.joints.actuated_names.index("torso_joint3")
-        torso_4_joint_idx = self._robot.joints.actuated_names.index("torso_joint4")
-        self._rest_cost_weights = jnp.array([1.0] * self._robot.joints.num_actuated_joints)
-        self._rest_cost_weights = self._rest_cost_weights.at[torso_1_joint_idx].set(20.0)   # some height movement allowed
-        self._rest_cost_weights = self._rest_cost_weights.at[torso_2_joint_idx].set(20.0) 
-        self._rest_cost_weights = self._rest_cost_weights.at[torso_3_joint_idx].set(20.0)
-        self._rest_cost_weights = self._rest_cost_weights.at[torso_4_joint_idx].set(20.0)
+        # IK runs on the PyRoKi server (PYROKI_SERVICE_URL) with capx/serving/assets/r1pro_ik.urdf.
+        # Joints not listed keep a rest-cost weight of 1.0; the torso is stiffer (some height movement allowed).
+        self._pyroki_ik_rest = init_pyroki_ik_rest(
+            "r1pro",
+            rest_cost_weights={f"torso_joint{i}": 20.0 for i in range(1, 5)},
+        )
+        self._pyroki_fk = init_pyroki_fk("r1pro")
         
         self.pyroki_joint_mapping = [0,1,2,3,4, 11, 5, 12, 6, 13, 7, 14, 8, 15, 9, 16, 10, 17] # from pyroki joint names to controller joint names
         self.controller_joint_mapping = [0,1,2,3, 4,6,8,10,12,14,16, 5,7,9,11,13,15,17] # from controller joint names to pyroki joint names
@@ -966,7 +957,7 @@ class R1ProControlApi(ApiBase):
         
         cur_joints = self.get_current_joint_positions()
         cur_pyroki_joints = cur_joints[6:24][self.controller_joint_mapping]
-        fk_eef = self._robot.forward_kinematics(cur_pyroki_joints)
+        fk_eef = self._pyroki_fk(cur_pyroki_joints)
         
         if arm == 0:
             gripper_index = 20
@@ -1003,7 +994,7 @@ class R1ProControlApi(ApiBase):
         
         solved_joints, joints = self.solve_ik(cur_eef_pose[0]+np.array([0.0, 0.0, 0.25]), cur_eef_pose[1][[3,0,1,2]], arm=arm)
                 
-        res  = self._robot.forward_kinematics(joints)
+        res  = self._pyroki_fk(joints)
         gripper_pose = res[gripper_index]
         
         self.viser_server.scene.add_frame(
@@ -1108,12 +1099,10 @@ class R1ProControlApi(ApiBase):
         
         try:
             current_q = self.get_current_joint_positions()[6:24][self.controller_joint_mapping]
-            cfg = self._pks.solve_ik_rest(
-                robot=self._robot,
-                target_link_name=target_link_name,
-                target_position=offset_pos,
+            cfg = self._pyroki_ik_rest(
+                target_link=target_link_name,
                 target_wxyz=quat_wxyz,
-                rest_cost_weights=self._rest_cost_weights,
+                target_position=offset_pos,
                 initial_q=current_q,
             )
         except TimeoutError:
@@ -1444,7 +1433,7 @@ class R1ProControlApi(ApiBase):
         rgb = rgb.cpu().numpy()[...,:3]
         plt.imshow(rgb)
         plt.savefig(f'{name}_rgb.png')
-        external_rgb = self._env.env.external_sensors['external_camera'].get_obs()[0]['rgb'][:,:,:3]
+        external_rgb = self._env.env.external_sensors[0]['external_camera'].get_obs()[0]['rgb'][:,:,:3]
         plt.imshow(external_rgb)
         plt.savefig(f'{name}_external_rgb.png')
 
