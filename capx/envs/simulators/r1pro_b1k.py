@@ -40,9 +40,6 @@ from omnigibson.utils.asset_utils import get_task_instance_path
 from omnigibson.utils.python_utils import recursively_convert_to_torch
 import json
 import math
-from omnigibson.action_primitives.curobo import (
-    holonomic_base_command_in_world_frame,
-)
 from omnigibson.action_primitives.action_primitive_set_base import (
     ActionPrimitiveError,
 )
@@ -52,9 +49,8 @@ from scipy.spatial import ConvexHull
 import matplotlib.pyplot as plt
 import time
 import random
-from omnigibson.learning.utils.eval_utils import (
-    TASK_NAMES_TO_INDICES,
-)
+from omnigibson.eval.utils.score_utils import load_human_stats
+from omnigibson.tasks.behavior_task import get_presampled_robot_poses
 from omnigibson.metrics import MetricBase, AgentMetric, TaskMetric
 
 # Make sure object states are enabled
@@ -138,37 +134,23 @@ class R1ProBehaviourLowLevel(BaseEnv):
         self.observation_buffer = deque(maxlen=10)
         
         
-        # Load config file
-        task_name = self.controller_cfg["task"]['activity_name']
-        # Now, get human stats of the task
-        task_idx = TASK_NAMES_TO_INDICES[task_name]
-        self.human_stats = {
-            "length": [],
-            "distance_traveled": [],
-            "left_eef_displacement": [],
-            "right_eef_displacement": [],
-        }
-        with open(os.path.join(gm.DATA_PATH, "2025-challenge-task-instances", "metadata", "episodes.jsonl"), "r") as f:
-            episodes = [json.loads(line) for line in f]
-        for episode in episodes:
-            if episode["episode_index"] // 1e4 == task_idx:
-                for k in self.human_stats.keys():
-                    self.human_stats[k].append(episode[k])
-        # take a mean
-        for k in self.human_stats.keys():
-            self.human_stats[k] = sum(self.human_stats[k]) / len(self.human_stats[k])
+        # Human stats of the task (mean over the demos), from the 2026 challenge metadata
+        self.human_stats = load_human_stats(self.task_name)
         
         self.env = og.Environment(configs=self.controller_cfg)
         
-        self.robot = self.env.robots[0]
-        self.task_relevant_obj = self.env.task.object_scope #keys and values of task relevant objects
+        # og.Environment is vectorized; CaP-X always runs a single env (index 0)
+        self.robot = self.env.scene.robots[0]
+        self.task_relevant_obj = self.env.task.object_scopes[0] #keys and values of task relevant objects
         self.object_state_key = self.env.task.low_dim_obs_keys # object state values are in state['task']['low_dim']
         print("Initialized Behavior1KLowLevel environment for task: ", self.task_name)
         
         self.metrics = self.load_metrics()
         
         
-        self.controller = StarterSemanticActionPrimitives(self.env, self.env.robots[0], enable_head_tracking=False)
+        self.controller = StarterSemanticActionPrimitives(self.env, self.robot, enable_head_tracking=False)
+        # The Isaac Sim 4.5 fork never attached the grasped object when planning; keep that behavior
+        self.controller.attach_obj_in_hand = False
         # torso_joint = self.controller.robot.joints["torso_joint2"]
         self.torso_idx_map = {
             "torso_joint1": 6,
@@ -204,6 +186,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         Args:
             instance_id (int): The ID of the task instance to load.
             test_hidden (bool): [Interal use only] Whether to load the hidden test instance.
+                Otherwise the instance comes from the 2026 challenge training split.
         """
         self.env.reset()
         scene_model = self.env.task.scene_name
@@ -213,38 +196,37 @@ class R1ProBehaviourLowLevel(BaseEnv):
             activity_definition_id=self.env.task.activity_definition_id,
             activity_instance_id=instance_id,
         )
-        if test_hidden:
-            tro_file_path = os.path.join(
-                gm.DATA_PATH,
-                "2025-challenge-test-instances",
-                self.env.task.activity_name,
-                f"{tro_filename}-tro_state.json",
+        mode = "hidden_test" if test_hidden else "train"
+        tro_file_path = get_task_instance_path(
+            scene_model,
+            f"{scene_model}_task_{self.env.task.activity_name}_instances/{tro_filename}-tro_state",
+            mode=mode,
+        )
+        if tro_file_path is None:
+            raise FileNotFoundError(
+                f"Could not find 2026 {mode} task instance {instance_id} for "
+                f"{self.env.task.activity_name} in scene {scene_model}."
             )
-        else:
-            tro_file_path = os.path.join(
-                get_task_instance_path(scene_model),
-                f"json/{scene_model}_task_{self.env.task.activity_name}_instances/{tro_filename}-tro_state.json",
-            )
-            
+
         with open(tro_file_path, "r") as f:
             tro_state = recursively_convert_to_torch(json.load(f))
         for tro_key, tro_state in tro_state.items():
             if tro_key == "robot_poses":
-                presampled_robot_poses = tro_state
-                robot_pos = presampled_robot_poses[self.robot.model_name][0]["position"]
-                robot_quat = presampled_robot_poses[self.robot.model_name][0]["orientation"]
-                self.robot.set_position_orientation(robot_pos, robot_quat)
+                available_poses = get_presampled_robot_poses(tro_state, robot_model=self.robot.model)
+                self.robot.set_position_orientation(
+                    available_poses[0]["position"], available_poses[0]["orientation"], frame="scene"
+                )
                 # Write robot poses to scene metadata
                 self.env.scene.write_task_metadata(key=tro_key, data=tro_state)
             else:
-                self.env.task.object_scope[tro_key].load_state(tro_state, serialized=False)
+                self.task_relevant_obj[tro_key].load_state(tro_state, serialized=False)
 
         # Try to ensure that all task-relevant objects are stable
         # They should already be stable from the sampled instance, but there is some issue where loading the state
         # causes some jitter (maybe for small mass / thin objects?)
         for _ in range(25):
             og.sim.step_physics()
-            for entity in self.env.task.object_scope.values():
+            for entity in self.task_relevant_obj.values():
                 if not entity.is_system and entity.exists:
                     entity.keep_still()
 
@@ -304,7 +286,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
             self.load_task_instance(0)
             
         for metric in self.metrics:
-            metric.start_callback(self.env)
+            metric.reset(self.env)
             
         self.step_num = 0
         
@@ -314,7 +296,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         """Low-level step - not typically called directly in code execution mode."""
         self._step_count += 1
         # This is a fallback; normally FrankaControlApi methods are used
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self._env_step(action)
         # self.observation_buffer.append(obs)
         self.cur_observation = obs
         success = info['done']['success']
@@ -324,15 +306,20 @@ class R1ProBehaviourLowLevel(BaseEnv):
             self.obs_buffer['robot']['ego'].append(obs[f'{robot_key}'][f'{robot_key}:zed_link:Camera:0']['rgb'][:,:,:3])
             self.obs_buffer['robot']['left_wrist'].append(obs[f'{robot_key}'][f'{robot_key}:left_realsense_link:Camera:0']['rgb'][:,:,:3])
             self.obs_buffer['robot']['right_wrist'].append(obs[f'{robot_key}'][f'{robot_key}:right_realsense_link:Camera:0']['rgb'][:,:,:3])
-            self.obs_buffer['external'].append(self.env.external_sensors['external_camera'].get_obs()[0]['rgb'][:,:,:3])
+            self.obs_buffer['external'].append(self.env.external_sensors[0]['external_camera'].get_obs()[0]['rgb'][:,:,:3])
         
         self._record_frame()
         
         for metric in self.metrics:
-            metric.step_callback(self.env)
+            metric.step(self.env, action, obs, reward, terminated, truncated, info)
         return obs, reward, terminated, truncated, info
     
     
+    def _env_step(self, action: Any) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+        """Steps the og.Environment and unwraps its per-env batch (CaP-X runs a single env)."""
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        return obs[0], reward[0].item(), terminated[0].item(), truncated[0].item(), info[0]
+
     def render(self, mode: str = "rgb_array") -> np.ndarray:  # type: ignore[override]
         if mode != "rgb_array":
             raise ValueError("Only rgb_array render mode is supported")
@@ -383,11 +370,9 @@ class R1ProBehaviourLowLevel(BaseEnv):
         if 'trash' in self.task_name:
             return self.pick_up_trash_reward()
 
-        for metric in self.metrics:
-            metric.end_callback(self.env)
         metrics = {}
         for metric in self.metrics:
-            metrics.update(metric.gather_results())
+            metrics.update(metric.aggregate(self.env))
             
         if self.task_completed():
             return 1
@@ -433,8 +418,8 @@ class R1ProBehaviourLowLevel(BaseEnv):
                     - proprio: 68
 
         """
-        obs, info = self.env.get_obs()
-        return obs
+        obs, _ = self.env.get_obs()
+        return obs[0]
     
     
     def update_torso(self, torso_joint_name: str, angle: float, max_steps=50):
@@ -497,7 +482,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         """
         self.controller.overwrite_arm(arm)
         target_joint_positions = self.controller._get_joint_position_with_fingers_at_limit("upper" if open else "lower")
-        action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, target_joint_positions))
+        action = self.robot.q_to_action(target_joint_positions)
         for _ in range(max_steps):
             self.step(action)
             current_joint_positions = self.robot.get_joint_positions()
@@ -732,7 +717,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         elif arm == 1:
             target_joint_positions[11] -= 0.4
             
-        action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, target_joint_positions))
+        action = self.robot.q_to_action(target_joint_positions)
         for _ in range(20):
             _ = self.step(action)
             current_joint_positions = self.robot.get_joint_positions()
@@ -756,14 +741,14 @@ class R1ProBehaviourLowLevel(BaseEnv):
         # for idx in range(N):
         #     cur_joint_positions = self.get_joint_positions()
         #     cur_target = cur_joint_positions + (target_joint_positions - cur_joint_positions).clamp(-delta, delta)
-        #     action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, cur_target))
+        #     action = self.robot.q_to_action(cur_target)
         #     for j in range(10):
         #         _ = self.step(action)
         #         current_joint_positions = self.get_joint_positions()
         #         if torch.allclose(current_joint_positions, cur_target, atol=0.005):
         #             break
         
-        action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, target_joint_positions))
+        action = self.robot.q_to_action(target_joint_positions)
         for idx in range(max_steps):
             _ = self.step(action)
             if idx % int(settle_steps) == 0:
@@ -793,7 +778,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         elif arm == 1:
             target_joint_positions[11] -= 0.4
             
-        action = self.robot.q_to_action(holonomic_base_command_in_world_frame(self.robot, target_joint_positions))
+        action = self.robot.q_to_action(target_joint_positions)
         for _ in range(20):
             _ = self.step(action)
             current_joint_positions = self.robot.get_joint_positions()
@@ -807,7 +792,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
             env.robot.joints.keys()
             dict_keys(['base_footprint_x_joint', 'base_footprint_y_joint', 'base_footprint_z_joint', 'base_footprint_rx_joint', 'base_footprint_ry_joint', 'base_footprint_rz_joint', 'torso_joint1', 'torso_joint2', 'torso_joint3', 'torso_joint4', 'left_arm_joint1', 'right_arm_joint1', 'left_arm_joint2', 'right_arm_joint2', 'left_arm_joint3', 'right_arm_joint3', 'left_arm_joint4', 'right_arm_joint4', 'left_arm_joint5', 'right_arm_joint5', 'left_arm_joint6', 'right_arm_joint6', 'left_arm_joint7', 'right_arm_joint7', 'left_gripper_finger_joint1', 'left_gripper_finger_joint2', 'right_gripper_finger_joint1', 'right_gripper_finger_joint2'])
         """
-        return self.env.robots[0].get_joint_positions()
+        return self.robot.get_joint_positions()
     
     
     def get_robot_eef_pose(self, arm=0) -> dict[str, Any]:
@@ -850,7 +835,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
             success = self.pick_up_trash_reward() == 1
         else:
             action = np.zeros_like(self.robot.action_space.sample())
-            obs, reward, terminated, truncated, info = self.env.step(action)
+            obs, reward, terminated, truncated, info = self._env_step(action)
             success = info['done']['success']
         return success
     
@@ -877,7 +862,7 @@ class R1ProBehaviourLowLevel(BaseEnv):
         obs_keys = list(obs.keys())
         robot_key = [key for key in obs_keys if 'robot' in key][0]
         frame ={
-            'rgb': self.env.external_sensors['external_camera'].get_obs()[0]['rgb'][:,:,:3].detach().cpu().numpy().copy(),
+            'rgb': self.env.external_sensors[0]['external_camera'].get_obs()[0]['rgb'][:,:,:3].detach().cpu().numpy().copy(),
             "ego": obs[f'{robot_key}'][f'{robot_key}:zed_link:Camera:0']['rgb'][:,:,:3].detach().cpu().numpy().copy(),
             "left_wrist": obs[f'{robot_key}'][f'{robot_key}:left_realsense_link:Camera:0']['rgb'][:,:,:3].detach().cpu().numpy().copy(),
             "right_wrist": obs[f'{robot_key}'][f'{robot_key}:right_realsense_link:Camera:0']['rgb'][:,:,:3].detach().cpu().numpy().copy()
@@ -944,7 +929,7 @@ def oracle_solution():
         cur_joint_positions = env.get_joint_positions()
         target_joint_positions = cur_joint_positions.clone()
         target_joint_positions[10] -= 0.4
-        action = env.robot.q_to_action(holonomic_base_command_in_world_frame(env.robot, target_joint_positions))
+        action = env.robot.q_to_action(target_joint_positions)
         for _ in range(20):
             _ = env.step(action)
             current_joint_positions = env.robot.get_joint_positions()
@@ -1206,7 +1191,7 @@ if __name__ == "__main__":
         cur_joint_positions = env.get_joint_positions()
         target_joint_positions = cur_joint_positions.clone()
         target_joint_positions[10] -= 0.4
-        action = env.robot.q_to_action(holonomic_base_command_in_world_frame(env.robot, target_joint_positions))
+        action = env.robot.q_to_action(target_joint_positions)
         for _ in range(20):
             _ = env.step(action)
             current_joint_positions = env.robot.get_joint_positions()
