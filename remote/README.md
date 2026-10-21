@@ -95,7 +95,7 @@ Agent の中からは見えない（`env.step()` が返すのは stdout / stderr
 name: my_suite      # 保存先のフォルダ名。省略するとファイル名
 trials: 3           # 各タスクの試行回数。省略すると 1
 seed: 42            # 書くと全試行で固定。省略すると試行ごとにランダム
-max_steps: 8        # 1 試行で env.step() を呼べる回数（1〜10）。省略すると 10
+max_steps: 8        # 1 試行で env.step() を呼べる回数（1〜20）。省略すると 10
 tasks:
   - cube_stack
   - libero_object_3
@@ -105,7 +105,16 @@ tasks:
 uv run --env-file .env suite.py suites/my_suite.yaml --agent agents/my_agent.py
 ```
 
-`suites/smoke.yaml` が例。最後に、タスクごとの指標の表が出る。
+最後に、タスクごとの指標の表が出る。用意してあるスイート:
+
+| スイート | タスク | 使いどころ |
+|---|---|---|
+| `suites/quick.yaml` | robosuite 3 + LIBERO-90 5 + LIBERO-10 2（10 タスク） | 素早く確かめる。`full` の部分集合 |
+| `suites/full.yaml` | robosuite 全 6 + LIBERO-90 20 + LIBERO-10 全 10（36 タスク） | 本評価 |
+
+LIBERO-90 は、操作の種類・シーン・複雑さが重ならないように選んでいる（理由は YAML のコメント）。
+どちらも `max_steps: 20`。ただし GPU マシン側の上限が今は 10 なので、それを上げるまでは
+11 回目の `env.step()` で止まり、予算超過（`budget`）として数えられる。
 
 | 指標 | 意味 |
 |---|---|

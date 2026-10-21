@@ -42,13 +42,13 @@ def test_minimal_suite_gets_defaults(tmp_path) -> None:
     assert config.name == "quick", "name を省略するとファイル名"
     assert config.trials == 1
     assert config.seed is None, "seed を省略するとランダム"
-    assert config.max_steps == 10, "max_steps を省略すると GPU マシン側の上限"
+    assert config.max_steps == 10, "max_steps を省略すると worker の既定と同じ"
 
 
 def test_all_problems_are_reported_at_once(tmp_path) -> None:
     path = _write(
         tmp_path / "bad.yaml",
-        "trials: 0\nseed: true\nmax_steps: 11\nmax_step: 3\ntasks: [a, b, a]\n",
+        "trials: 0\nseed: true\nmax_steps: 21\nmax_step: 3\ntasks: [a, b, a]\n",
     )
     with pytest.raises(suite.SuiteConfigError) as err:
         suite.load_suite(path)
@@ -57,7 +57,7 @@ def test_all_problems_are_reported_at_once(tmp_path) -> None:
     assert "max_step" in message, "打ち間違えたキーを黙って無視しない"
     assert "trials" in message
     assert "seed" in message, "bool は整数として通さない"
-    assert "max_steps は 1〜10" in message, "GPU マシン側の上限を超えられない"
+    assert "max_steps は 1〜20" in message
     assert "a" in message and "2 回以上" in message
 
 
@@ -65,6 +65,38 @@ def test_saved_suite_reads_back_the_same(tmp_path) -> None:
     config = suite.load_suite(_write(tmp_path / "s.yaml", "tasks: [x, y]\ntrials: 3\nmax_steps: 4\n"))
     again = suite.load_suite(_write(tmp_path / "copy.yaml", config.to_yaml()))
     assert again == suite.SuiteConfig(name="s", tasks=("x", "y"), trials=3, seed=None, max_steps=4)
+
+
+# -- 登録済みのスイート ------------------------------------------------------
+
+
+def _count(tasks, prefix: str) -> int:
+    return sum(t.startswith(prefix) for t in tasks)
+
+
+@pytest.mark.parametrize("name", ["quick", "full"])
+def test_bundled_suites_name_tasks_the_server_has(name) -> None:
+    from capx.remote_env.server.tasks import TASKS
+
+    config = suite.load_suite(REMOTE / "suites" / f"{name}.yaml")
+    assert config.name == name
+    assert set(config.tasks) <= set(TASKS)
+
+
+def test_full_and_quick_suites_have_the_agreed_tasks() -> None:
+    from capx.remote_env.server.tasks import TASKS
+
+    full = suite.load_suite(REMOTE / "suites" / "full.yaml").tasks
+    quick = suite.load_suite(REMOTE / "suites" / "quick.yaml").tasks
+    robosuite = {t for t in TASKS if not t.startswith("libero_")}
+
+    assert set(robosuite) <= set(full), "robosuite は全タスク"
+    assert (_count(full, "libero_90_"), _count(full, "libero_10_")) == (20, 10)
+    assert len(full) == len(robosuite) + 30, "LIBERO-Spatial / Object / Goal は入れない"
+
+    assert set(quick) <= set(full), "quick は full の部分集合"
+    assert (len(quick) - _count(quick, "libero_"), _count(quick, "libero_90_"), _count(quick, "libero_10_")) == (3, 5, 2)
+    assert len(quick) == 10
 
 
 # -- max_steps ------------------------------------------------------------

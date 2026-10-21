@@ -1,9 +1,9 @@
 """複数のタスクをまとめて評価する（評価スイート）。
 
     cd remote
-    uv run --env-file .env suite.py suites/smoke.yaml --agent agents/my_agent.py
+    uv run --env-file .env suite.py suites/quick.yaml --agent agents/my_agent.py
 
-スイートは YAML に書く（`suites/smoke.yaml` が例）。タスクを順に、各タスクの中で試行を
+スイートは YAML に書く（`suites/quick.yaml` / `suites/full.yaml`）。タスクを順に、各タスクの中で試行を
 順に回し、最後に Zero-shot pass@1・error_rate・実行時間を集計する（`suite_summary.py`）。
 
 失敗は 3 種類に分ける。推論の失敗（生成コードのエラー・Agent の例外・予算超過）は
@@ -48,8 +48,12 @@ from capx.bench.args import AgentArgs  # noqa: E402
 from capx.bench.errors import explain, explain_load  # noqa: E402
 from capx.bench.schema import git_info  # noqa: E402
 
-#: GPU マシン側の `max_steps` の上限（worker の既定）。手元ではこれ以下にしか絞れない。
-SERVER_MAX_STEPS = Budget().max_steps
+#: `max_steps` を省略したときの値（worker の既定と同じ）。
+DEFAULT_MAX_STEPS = Budget().max_steps
+#: スイートに書ける `max_steps` の上限。GPU マシン側の上限（worker の起動時に決まる。
+#: 今は 10）を 20 に上げる予定で、それに合わせてある。上げるまでは 11 回目の `step()` が
+#: GPU マシン側で止まり、予算超過（`budget`）として数えられる。
+MAX_STEPS_LIMIT = 20
 
 
 # -- スイートの設定 ------------------------------------------------------
@@ -65,7 +69,7 @@ class SuiteConfig:
     tasks: tuple[str, ...]
     trials: int = 1
     seed: int | None = None
-    max_steps: int = SERVER_MAX_STEPS
+    max_steps: int = DEFAULT_MAX_STEPS
 
     def to_yaml(self) -> str:
         data = {**asdict(self), "tasks": list(self.tasks)}
@@ -100,12 +104,9 @@ def load_suite(path: str | Path) -> SuiteConfig:
     if seed is not None and (not _is_int(seed) or seed < 1):
         problems.append(f"seed は 1 以上の整数。毎回ランダムにするなら書かない（今: {seed!r}）")
 
-    max_steps = data.get("max_steps", SERVER_MAX_STEPS)
-    if not _is_int(max_steps) or not 1 <= max_steps <= SERVER_MAX_STEPS:
-        problems.append(
-            f"max_steps は 1〜{SERVER_MAX_STEPS} の整数。GPU マシン側の上限（{SERVER_MAX_STEPS}）"
-            f"より大きくはできない（今: {max_steps!r}）"
-        )
+    max_steps = data.get("max_steps", DEFAULT_MAX_STEPS)
+    if not _is_int(max_steps) or not 1 <= max_steps <= MAX_STEPS_LIMIT:
+        problems.append(f"max_steps は 1〜{MAX_STEPS_LIMIT} の整数（今: {max_steps!r}）")
 
     tasks = data.get("tasks")
     if not isinstance(tasks, list) or not tasks or not all(isinstance(t, str) for t in tasks):
@@ -132,7 +133,7 @@ class StepLimitedEnv:
     """`step()` の回数を手元で数え、`max_steps` を超える呼び出しを止める。
 
     GPU マシン側の上限は worker の起動時に決まり、手元からは変えられない。そこで
-    それより小さい上限をここでかける。超えた `step()` は GPU マシンへ送らず、
+    スイートごとの上限をここでかける（GPU マシン側の上限より大きくしても、そちらで止まる）。超えた `step()` は GPU マシンへ送らず、
     `BudgetExceeded` を投げる。Bench（`run_trial`）がそれを予算超過として記録し、
     その時点の状態で採点する。
 
