@@ -3,8 +3,10 @@
     cd remote
     uv run --env-file .env suite.py suites/quick.yaml --agent agents/my_agent.py
 
-スイートは YAML に書く（`suites/quick.yaml` / `suites/full.yaml`）。タスクを順に、各タスクの中で試行を
-順に回し、最後に Zero-shot pass@1・error_rate・実行時間を集計する（`suite_summary.py`）。
+スイートは YAML に書く（`suites/quick.yaml` / `suites/full.yaml`）。タスクを順に（`--parallel N`
+なら N タスクずつ同時に）、各タスクの中で試行を順に回し、最後に Zero-shot pass@1・error_rate・
+実行時間を集計する（`suite_summary.py`）。セッションを開く前に GPU マシンの空きを確かめ、
+混んでいれば空くまで待つ。
 
 失敗は 3 種類に分ける。推論の失敗（生成コードのエラー・Agent の例外・予算超過）は
 Agent の指標に数える。インフラの失敗（GPU マシン・LLM サーバ）は同じ試行をやり直し、
@@ -20,8 +22,10 @@ import random
 import re
 import shutil
 import sys
+import threading
 import time
-from dataclasses import asdict, dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +46,13 @@ from trial import (  # noqa: E402
     _retry_infra,
 )
 
-from capx.agent_api import Budget, BudgetExceeded, EnvStartFailed, EnvUnavailable  # noqa: E402
+from capx.agent_api import (  # noqa: E402
+    Budget,
+    BudgetExceeded,
+    CapacityFull,
+    EnvStartFailed,
+    EnvUnavailable,
+)
 from capx.bench import load_agent, run_trial  # noqa: E402
 from capx.bench.args import AgentArgs  # noqa: E402
 from capx.bench.errors import explain, explain_load  # noqa: E402
@@ -54,6 +64,14 @@ DEFAULT_MAX_STEPS = Budget().max_steps
 #: 今は 10）を 20 に上げる予定で、それに合わせてある。上げるまでは 11 回目の `step()` が
 #: GPU マシン側で止まり、予算超過（`budget`）として数えられる。
 MAX_STEPS_LIMIT = 20
+
+#: 同時に回すタスクの数（`--parallel`）の上限。GPU マシンの枠は全員で共有する。
+MAX_PARALLEL = 4
+#: `--parallel` が 2 以上のとき、ほかの人のために空けておくセッションの枠の数。
+RESERVED_SLOTS = 2
+#: GPU マシンが空くのを待つとき、見直す間隔と、諦めるまでの時間（秒）。
+SLOT_POLL_S = 15.0
+SLOT_WAIT_LIMIT_S = 30 * 60.0
 
 
 # -- スイートの設定 ------------------------------------------------------
@@ -198,22 +216,52 @@ class Runner:
     server_url: str | None
     endpoint: str | None
     sleep: Any = time.sleep
+    parallel: int = 1
+    _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _done: int = field(default=0, init=False, repr=False)
 
     def run(self) -> None:
-        planned = len(self.suite.tasks) * self.suite.trials
-        done = 0
-        for task in self.suite.tasks:
-            task_dir = self.run_dir / task
-            task_dir.mkdir(parents=True, exist_ok=True)
-            holder: dict[str, Any] = {"env": None}
+        if self.parallel <= 1:
+            for task in self.suite.tasks:
+                self.run_task(task)
+            return
+        # タスク単位で並べる。同じタスクの試行は 1 つのセッションで順に回す
+        with ThreadPoolExecutor(max_workers=self.parallel, thread_name_prefix="suite") as pool:
+            futures = [pool.submit(self.run_task, task) for task in self.suite.tasks]
             try:
-                for trial in range(1, self.suite.trials + 1):
-                    done += 1
-                    line = self.run_one(holder, task, trial)
-                    print(f"[{done}/{planned}] {task} trial {trial}: {line}")
-            finally:
-                if holder["env"] is not None:
-                    holder["env"].close()
+                for future in as_completed(futures):
+                    future.result()
+            except BaseException:
+                # 回し始めた試行は途中で止められないので、終わるのを待つ（with を抜けるとき）
+                self._stop.set()
+                for future in futures:
+                    future.cancel()
+                print("止める。実行中の試行が終わるのを待つ")
+                raise
+
+    def run_task(self, task: str) -> None:
+        """1 タスクの試行を順に回す。セッションは試行の間で使い回す。"""
+        if self._stop.is_set():
+            return
+        (self.run_dir / task).mkdir(parents=True, exist_ok=True)
+        holder: dict[str, Any] = {"env": None}
+        try:
+            for trial in range(1, self.suite.trials + 1):
+                if self._stop.is_set():
+                    return
+                line = self.run_one(holder, task, trial)
+                with self._lock:
+                    self._done += 1
+                    planned = len(self.suite.tasks) * self.suite.trials
+                    print(f"[{self._done}/{planned}] {task} trial {trial}: {line}")
+        except BaseException:
+            # ほかのスレッドが次の試行・タスクを始めないよう、ここで止める合図を出す
+            self._stop.set()
+            raise
+        finally:
+            if holder["env"] is not None:
+                holder["env"].close()
 
     def run_one(self, holder: dict[str, Any], task: str, trial: int) -> str:
         """1 試行を、インフラの失敗ならやり直しながら回す。進捗の 1 行を返す。"""
@@ -280,6 +328,48 @@ class Runner:
         return summary
 
     def _connect(self, task: str):
+        """GPU マシンが空くのを待ってから、セッションを開く。
+
+        空きは `GET /sessions` で確かめる。確かめた直後にほかの人が埋めて 429 が返ったときも、
+        待ってからもう一度開く。どちらも、インフラの失敗のやり直しの回数には数えない。
+        `SLOT_WAIT_LIMIT_S` 待っても空かなければ `CapacityFull` を投げる（そこからは
+        インフラの失敗として扱う）。
+        """
+        waited = 0.0
+        while True:
+            busy = self._busy(task)
+            if busy is None:
+                try:
+                    return self._open(task)
+                except CapacityFull as exc:
+                    busy = str(exc)
+            if waited >= SLOT_WAIT_LIMIT_S:
+                raise CapacityFull(f"{waited / 60:.0f} 分待っても GPU マシンが空かない: {busy}")
+            if not waited:
+                print(f"{task}: GPU マシンが混んでいる（{busy}）。空くのを待つ")
+            self.sleep(SLOT_POLL_S)
+            waited += SLOT_POLL_S
+
+    def _busy(self, task: str) -> str | None:
+        """新しくセッションを開けるか。開けるなら None、開けないなら理由。"""
+        if self.endpoint:
+            return None
+        try:
+            now = _occupancy(self.server_url)
+        except Exception:
+            return None  # 見られない（古い backend など）ときは、開いてみて 429 で判断する
+        reserve = RESERVED_SLOTS if self.parallel > 1 else 0
+        free = now["capacity"] - now["active"]
+        if free <= reserve:
+            return f"空き {free} 枠。ほかの人のために {reserve} 枠は空けておく" if reserve else "空き 0 枠"
+        if "memory_budget_gb" in now and "memory_used_gb" in now:
+            free_gb = now["memory_budget_gb"] - now["memory_used_gb"]
+            need_gb = _session_memory_gb(task) * (1 + reserve)
+            if free_gb < need_gb:
+                return f"メモリの空き {free_gb:.0f}GB（{need_gb:.0f}GB 要る）"
+        return None
+
+    def _open(self, task: str):
         """セッションを開く。直らない失敗は止め、一時的な失敗はやり直せる形で投げる。"""
         import requests
 
@@ -365,6 +455,22 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _session_memory_gb(task: str) -> float:
+    """1 セッションが GPU マシンで借りるメモリ（GB）。backend の既定（`RUNTIME_MEMORY`）と同じ。"""
+    return 5.0 if task.startswith("libero_") else 4.0
+
+
+def _occupancy(server_url: str) -> dict[str, Any]:
+    """GPU マシンの今の混み具合（`active` / `capacity` / `memory_used_gb` / `memory_budget_gb`）。"""
+    import requests
+
+    from capx.remote_env.client import _auth_headers
+
+    reply = requests.get(f"{server_url.rstrip('/')}/sessions", headers=_auth_headers(), timeout=10)
+    reply.raise_for_status()
+    return reply.json()
+
+
 def _available_tasks(server_url: str) -> list[str]:
     import requests
 
@@ -405,6 +511,7 @@ def main(
     model: str | None = None,
     output_dir: str | None = None,
     record_video: bool = True,
+    parallel: int = 1,
     endpoint: str | None = None,
 ) -> None:
     """スイートの全タスクを回し、最後に集計する。
@@ -416,9 +523,14 @@ def main(
         output_dir: 結果を置く場所。省略すると `remote/outputs/`。その下の
             `<モデル名>/suite_<名前>/<日時>/` に、タスクごと・試行ごとのフォルダを作る。
         record_video: `--no-record-video` で動画を保存しない。
+        parallel: 同時に回すタスクの数（1〜4）。GPU マシンの空きを見て、混んでいれば待つ。
+            並べると GPU・LLM サーバを取り合うので、実行時間は 1 本ずつより長くなる。
         endpoint: worker に直接つなぐ（`tcp://host:19500`）。タスクが 1 つのスイートだけ。
             通常は使わない。
     """
+    # ファイルや `tee` に流したときも、進捗を 1 行ずつすぐに出す（既定ではためてから書く）
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     server_url = os.environ.get("CAPX_ENV_SERVER_URL")
     if not endpoint and not server_url:
         sys.exit(
@@ -426,7 +538,9 @@ def main(
             "（`uv run --env-file .env suite.py ...` で実行する）"
         )
 
-    runner = _prepare(suite, agent, model, output_dir, record_video, server_url, endpoint)
+    if not 1 <= parallel <= MAX_PARALLEL:
+        sys.exit(f"--parallel は 1〜{MAX_PARALLEL}（GPU マシンの枠は全員で共有する）")
+    runner = _prepare(suite, agent, model, output_dir, record_video, parallel, server_url, endpoint)
 
     print(f"保存先: {runner.run_dir}")
     stopped = None
@@ -444,7 +558,7 @@ def main(
         sys.exit(stopped)
 
 
-def _prepare(suite_path, agent, model, output_dir, record_video, server_url, endpoint) -> Runner:
+def _prepare(suite_path, agent, model, output_dir, record_video, parallel, server_url, endpoint) -> Runner:
     path = _resolve_suite(suite_path)
     try:
         config = load_suite(path)
@@ -454,6 +568,7 @@ def _prepare(suite_path, agent, model, output_dir, record_video, server_url, end
     agent_path = _resolve_agent(agent or "agents/example_agent.py")
     model = model if model is not None else os.environ.get("OPENAI_BASE_MODEL", "")
     _try_load(agent_path, model)
+    parallel = min(parallel, len(config.tasks))
 
     sha = _sha256(agent_path)
     run_dir = _make_run_dir(output_dir, model, f"suite_{config.name}")
@@ -464,6 +579,7 @@ def _prepare(suite_path, agent, model, output_dir, record_video, server_url, end
             {
                 "agent": {"spec": str(agent_path), "sha256": sha, "model": model},
                 "record_video": record_video,
+                "parallel": parallel,
                 "git": git_info(),
                 "started_at": _now(),
                 "finished_at": None,
@@ -473,7 +589,9 @@ def _prepare(suite_path, agent, model, output_dir, record_video, server_url, end
         ),
         encoding="utf-8",
     )
-    return Runner(config, run_dir, agent_path, sha, model, record_video, server_url, endpoint)
+    return Runner(
+        config, run_dir, agent_path, sha, model, record_video, server_url, endpoint, parallel=parallel
+    )
 
 
 def _try_load(agent_path: Path, model: str) -> None:

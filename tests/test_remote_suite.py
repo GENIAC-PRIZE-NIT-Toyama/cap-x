@@ -320,6 +320,129 @@ def test_discarding_twice_keeps_both(runner) -> None:
     assert len(list((runner.task_dir / "_discarded").iterdir())) == 2, "前に捨てたものを上書きしない"
 
 
+# -- GPU マシンの空きを待つ・並列 ------------------------------------------
+
+
+def _via_server(runner, monkeypatch, occupancy, parallel=1):
+    """`--endpoint` ではなく backend 経由にし、`GET /sessions` の答えを順に決める。"""
+    runner.runner.endpoint = None
+    runner.runner.server_url = "http://gpu"
+    runner.runner.parallel = parallel
+    seen = list(occupancy)
+    monkeypatch.setattr(suite, "_occupancy", lambda url: seen.pop(0) if len(seen) > 1 else seen[0])
+
+
+def _occ(active, capacity=20, used_gb=0.0, budget_gb=100.0):
+    return {"active": active, "capacity": capacity, "memory_used_gb": used_gb, "memory_budget_gb": budget_gb}
+
+
+def test_waits_for_a_free_slot_before_opening_a_session(runner, monkeypatch) -> None:
+    _via_server(runner, monkeypatch, [_occ(20), _occ(20), _occ(19)])
+    runner.plan.extend([None])
+
+    runner.runner.run_one({"env": None}, "cube_stack", 1)
+    assert runner.waits == [suite.SLOT_POLL_S] * 2, "空くまで待ってから開く"
+    assert _events(runner.task_dir) == [], "待つのはインフラの失敗に数えない"
+
+
+def test_waits_for_memory_too(runner, monkeypatch) -> None:
+    _via_server(runner, monkeypatch, [_occ(5, used_gb=97.0), _occ(5, used_gb=90.0)])
+    runner.plan.extend([None])
+
+    runner.runner.run_one({"env": None}, "libero_10_0", 1)
+    assert runner.waits == [suite.SLOT_POLL_S], "LIBERO は 5GB 要る"
+
+
+def test_parallel_runs_leave_slots_for_others(runner, monkeypatch) -> None:
+    _via_server(runner, monkeypatch, [_occ(18), _occ(17)], parallel=2)
+    runner.plan.extend([None])
+
+    runner.runner.run_one({"env": None}, "cube_stack", 1)
+    assert runner.waits == [suite.SLOT_POLL_S], f"{suite.RESERVED_SLOTS} 枠は空けておく"
+
+
+def test_session_refused_as_full_is_waited_for_not_retried(runner, monkeypatch) -> None:
+    from capx.agent_api import CapacityFull
+
+    _via_server(runner, monkeypatch, [_occ(0)])
+    runner.opens.extend([CapacityFull("見たあとで埋まった")])
+    runner.plan.extend([None])
+
+    line = runner.runner.run_one({"env": None}, "cube_stack", 1)
+    assert "completed" in line
+    assert runner.waits == [suite.SLOT_POLL_S]
+    assert _events(runner.task_dir) == []
+
+
+def test_gives_up_waiting_after_the_limit(runner, monkeypatch) -> None:
+    from capx.agent_api import CapacityFull
+
+    monkeypatch.setattr(suite, "SLOT_WAIT_LIMIT_S", 30.0)
+    _via_server(runner, monkeypatch, [_occ(20)])
+
+    with pytest.raises(CapacityFull, match="空かない"):
+        runner.runner._connect("cube_stack")
+    assert runner.waits == [15.0, 15.0]
+
+
+def test_opens_directly_when_occupancy_cannot_be_read(runner, monkeypatch) -> None:
+    def broken(url):
+        raise OSError("古い backend")
+
+    runner.runner.endpoint = None
+    runner.runner.server_url = "http://gpu"
+    monkeypatch.setattr(suite, "_occupancy", broken)
+    runner.plan.extend([None])
+
+    runner.runner.run_one({"env": None}, "cube_stack", 1)
+    assert runner.waits == []
+
+
+def _parallel_runner(runner, monkeypatch, outcomes: dict[str, list]):
+    """タスクごとに `run_trial` の結果を決める（スレッドの順番に依らない）。"""
+
+    def fake_run_trial(env, agent, trial, config, budget, **kw):
+        task = Path(config["output_dir"]).name
+        time.sleep(0.01)
+        return _summary(Path(config["output_dir"]), trial, outcomes[task].pop(0))
+
+    monkeypatch.setattr(suite, "run_trial", fake_run_trial)
+    tasks = tuple(outcomes)
+    runner.runner.suite = suite.SuiteConfig(name="t", tasks=tasks, trials=2)
+    runner.runner.parallel = 2
+    return tasks
+
+
+def test_parallel_run_finishes_every_trial(runner, monkeypatch, capsys) -> None:
+    tasks = _parallel_runner(runner, monkeypatch, {t: [None, None] for t in ("a", "b", "c")})
+
+    runner.runner.run()
+    for task in tasks:
+        assert sorted(suite_summary.trial_dirs(runner.runner.run_dir / task)) == [1, 2]
+    assert "[6/6]" in capsys.readouterr().out
+
+
+def test_config_failure_in_one_task_stops_the_others(runner, monkeypatch) -> None:
+    outcomes = {"a": ["llm_auth"], "b": [None, None], "c": [None, None]}
+
+    def fake_run_trial(env, agent, trial, config, budget, **kw):
+        task = Path(config["output_dir"]).name
+        if task == "b":
+            # a が止めるまで b の 1 回目を終わらせない（同時に走っている試行）
+            assert runner.runner._stop.wait(timeout=5)
+        return _summary(Path(config["output_dir"]), trial, outcomes[task].pop(0))
+
+    monkeypatch.setattr(suite, "run_trial", fake_run_trial)
+    runner.runner.suite = suite.SuiteConfig(name="t", tasks=("a", "b", "c"), trials=2)
+    runner.runner.parallel = 2
+
+    with pytest.raises(suite.SuiteAbortError):
+        runner.runner.run()
+    run_dir = runner.runner.run_dir
+    assert sorted(suite_summary.trial_dirs(run_dir / "b")) == [1], "走っていた試行は終わらせ、次は始めない"
+    assert not (run_dir / "c").exists(), "まだ始めていないタスクは回さない"
+
+
 # -- 集計 ----------------------------------------------------------------
 
 

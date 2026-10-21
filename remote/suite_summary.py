@@ -48,6 +48,11 @@ ROBOSUITE_SEED_NOTE = (
     "robosuite のタスク（{tasks}）は seed が初期配置に効かない。"
     "同じ seed でも試行ごとに配置が変わる"
 )
+#: 並列で回したときの注意。実行時間は並べた数によって変わる。
+PARALLEL_NOTE = (
+    "{parallel} タスクずつ並列で回した。GPU マシン・LLM サーバを取り合うので、wall_clock は"
+    " 1 本ずつのときより長くなりうる。並べた数が違う実行どうしで時間を比べない"
+)
 
 
 def summarize(run_dir: str | Path) -> dict[str, Any]:
@@ -64,11 +69,16 @@ def summarize(run_dir: str | Path) -> dict[str, Any]:
     results = [r for found in per_task.values() for r in found.values()]
 
     robosuite = [t for t in suite["tasks"] if not t.startswith("libero_")]
+    parallel = run.get("parallel", 1)
+    notes = [ROBOSUITE_SEED_NOTE.format(tasks=", ".join(robosuite))] if robosuite else []
+    if parallel > 1:
+        notes.append(PARALLEL_NOTE.format(parallel=parallel))
     return {
         "schema_version": SCHEMA_VERSION,
         "suite": suite,
         "agent": run.get("agent"),
         "git": run.get("git"),
+        "parallel": parallel,
         "started_at": run.get("started_at"),
         "finished_at": run.get("finished_at"),
         "complete": all(not t["not_run"] for t in tasks.values()),
@@ -86,7 +96,7 @@ def summarize(run_dir: str | Path) -> dict[str, Any]:
             "wall_clock_s_median": _stats([r["wall_clock_s"] for r in results])["median"],
         },
         "infra": _total_infra(tasks.values()),
-        "notes": [ROBOSUITE_SEED_NOTE.format(tasks=", ".join(robosuite))] if robosuite else [],
+        "notes": notes,
     }
 
 
@@ -105,7 +115,7 @@ def render(summary: dict[str, Any]) -> str:
     agent = summary.get("agent") or {}
     lines = [
         f"suite {suite['name']}  ({agent.get('spec')}, model={agent.get('model') or '未設定'},"
-        f" max_steps={suite['max_steps']}, trials={suite['trials']})",
+        f" max_steps={suite['max_steps']}, trials={suite['trials']}, parallel={summary.get('parallel', 1)})",
         "",
     ]
     rows = [("task", "pass@1", "error_rate", "wall_clock 中央値", "備考")]
