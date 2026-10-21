@@ -88,9 +88,10 @@ def test_full_and_quick_suites_have_the_agreed_tasks() -> None:
 
     full = suite.load_suite(REMOTE / "suites" / "full.yaml").tasks
     quick = suite.load_suite(REMOTE / "suites" / "quick.yaml").tasks
-    robosuite = {t for t in TASKS if not t.startswith("libero_")}
+    robosuite = {t for t in TASKS if not t.startswith("libero_")} - {"two_arm_lift"}
 
-    assert set(robosuite) <= set(full), "robosuite は全タスク"
+    assert set(robosuite) <= set(full), "robosuite は two_arm_lift（両腕）を除く全タスク"
+    assert "two_arm_lift" not in full
     assert (_count(full, "libero_90_"), _count(full, "libero_10_")) == (20, 10)
     assert len(full) == len(robosuite) + 30, "LIBERO-Spatial / Object / Goal は入れない"
 

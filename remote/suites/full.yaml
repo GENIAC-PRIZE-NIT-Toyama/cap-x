@@ -1,9 +1,9 @@
-# 本評価用のスイート。robosuite 6 + LIBERO-90 20 + LIBERO-10 10 = 36 タスク。
+# 本評価用のスイート。robosuite 5 + LIBERO-90 20 + LIBERO-10 10 = 35 タスク。
 #
 #   uv run --env-file .env suite.py suites/full.yaml --agent agents/my_agent.py
 #
 # 選び方:
-#   - robosuite と LIBERO-10 は全タスク
+#   - robosuite は two_arm_lift（両腕）を除く全タスク、LIBERO-10 は全タスク
 #   - LIBERO-90 は、操作の種類・シーン・複雑さが重ならないように 20 を選ぶ
 #     （キッチン 1〜10 は全シーン、リビング・書斎からも選ぶ）
 #   - LIBERO-Spatial / Object / Goal と、LIBERO-PRO の摂動 suite は入れない
@@ -14,13 +14,12 @@ name: full
 trials: 1
 max_steps: 20
 tasks:
-  # robosuite（全 6）
+  # robosuite（5 / 6。two_arm_lift は入れない）
   - cube_lifting
   - cube_stack
   - cube_restack
   - nut_assembly
   - spill_wipe
-  - two_arm_lift
   # LIBERO-90（20 / 90）
   - libero_90_3   # KITCHEN_SCENE10 奥のバターを上の引き出しに入れて閉める（複合・位置の指定）
   - libero_90_6   # KITCHEN_SCENE1 下の引き出しを開ける（関節物体）

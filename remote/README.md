@@ -111,7 +111,7 @@ uv run --env-file .env suite.py suites/my_suite.yaml --agent agents/my_agent.py
 | スイート | タスク | 使いどころ |
 |---|---|---|
 | `suites/quick.yaml` | robosuite 3 + LIBERO-90 5 + LIBERO-10 2（10 タスク） | 素早く確かめる。`full` の部分集合 |
-| `suites/full.yaml` | robosuite 全 6 + LIBERO-90 20 + LIBERO-10 全 10（36 タスク） | 本評価 |
+| `suites/full.yaml` | robosuite 5（`two_arm_lift` を除く）+ LIBERO-90 20 + LIBERO-10 全 10（35 タスク） | 本評価 |
 
 LIBERO-90 は、操作の種類・シーン・複雑さが重ならないように選んでいる（理由は YAML のコメント）。
 どちらも `max_steps: 20`。ただし GPU マシン側の上限が今は 10 なので、それを上げるまでは
