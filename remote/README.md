@@ -64,6 +64,7 @@ uv run --env-file .env trial.py --agent agents/my_agent.py
 - `task.instruction` / `task.api_docs` … やることと、使える関数の説明
 
 LLM は手元から直接呼ぶ（`OPENAI_BASE_URL`）。GPU マシンからは呼ばない。
+LLM を使う例は `agents/multiturn_agent.py`（コードを書かせて実行し、結果を返して次を書かせる）。
 
 ## 結果
 
