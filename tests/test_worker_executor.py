@@ -44,6 +44,13 @@ def test_rpc_keeps_tuples_and_arrays() -> None:
     assert np.array_equal(out[0], np.arange(3.0))
 
 
+def test_rpc_arrays_are_writeable() -> None:
+    pos, quat = rpc.unpack(rpc.pack((np.zeros(3), np.zeros(4))))
+    pos[2] += 0.02
+    assert pos[2] == pytest.approx(0.02)
+    assert quat.flags.writeable
+
+
 def test_api_calls_go_back_to_the_gym_and_variables_persist(executor) -> None:
     fns, calls = _api()
     executor.reset({"k": 1}, list(fns))
