@@ -47,11 +47,16 @@ def pack(obj: Any) -> bytes:
 def unpack(raw: bytes) -> Any:
     import msgpack
     import msgpack_numpy
+    import numpy as np
 
     def hook(obj: Any) -> Any:
         if len(obj) == 1 and _TUPLE in obj:
             return tuple(obj[_TUPLE])
-        return msgpack_numpy.decode(obj)
+        decoded = msgpack_numpy.decode(obj)
+        # np.frombuffer 由来で読み取り専用になる。ローカル実行と同じく書き換えられるようにする
+        if isinstance(decoded, np.ndarray) and not decoded.flags.writeable:
+            return decoded.copy()
+        return decoded
 
     return msgpack.unpackb(raw, object_hook=hook, raw=False, strict_map_key=False)
 
