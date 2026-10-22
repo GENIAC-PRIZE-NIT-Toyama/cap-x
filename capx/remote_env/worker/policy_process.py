@@ -21,6 +21,45 @@ from typing import Any
 
 from capx.remote_env.worker import rpc
 
+_CAUSE = "\nThe above exception was the direct cause of the following exception:\n\n"
+_CONTEXT = "\nDuring handling of the above exception, another exception occurred:\n\n"
+
+
+class _ApiError(Exception):
+    """Gym 側で API が投げた例外。中身は Gym 側が作った「型: メッセージ」。"""
+
+
+def _format_error(exc: BaseException, seen: set[int] | None = None) -> str:
+    """生成コードの中で起きた部分だけの traceback。
+
+    このファイルのフレーム（`exec` を呼ぶ `_exec`、API のスタブ）は外す。`-m` で起動するので
+    `__name__` は生成コードと同じ `"__main__"` になる。見分けるのはファイル名で。
+    API の例外は、Gym 側から届いた文字列をそのまま最後の行にする（包み直した型は出さない）。
+    """
+    seen = seen if seen is not None else set()
+    seen.add(id(exc))
+    text = ""
+    if exc.__cause__ is not None and id(exc.__cause__) not in seen:
+        text = _format_error(exc.__cause__, seen) + _CAUSE
+    elif (
+        exc.__context__ is not None
+        and not exc.__suppress_context__
+        and id(exc.__context__) not in seen
+    ):
+        text = _format_error(exc.__context__, seen) + _CONTEXT
+
+    frames = [
+        (frame, lineno)
+        for frame, lineno in traceback.walk_tb(exc.__traceback__)
+        if frame.f_code.co_filename != __file__
+    ]
+    if frames:
+        text += "Traceback (most recent call last):\n"
+        text += "".join(traceback.StackSummary.extract(frames).format())
+    if isinstance(exc, _ApiError):
+        return text + f"{exc}\n"
+    return text + "".join(traceback.format_exception_only(type(exc), exc))
+
 
 class _Session:
     def __init__(self, sock: socket.socket) -> None:
@@ -32,7 +71,7 @@ class _Session:
             rpc.send(self._sock, {"op": "call", "name": name, "args": args, "kwargs": kwargs})
             reply = rpc.recv(self._sock)
             if reply.get("op") == "raise":
-                raise RuntimeError(reply.get("error", "API call failed"))
+                raise _ApiError(reply.get("error", "API call failed"))
             return reply.get("value")
 
         call.__name__ = name
@@ -58,9 +97,9 @@ class _Session:
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 exec(message["code"], g, g)  # noqa: S102 — ここが生成コードの実行
-        except BaseException:
+        except BaseException as exc:
             ok = False
-            traceback.print_exc(file=err)
+            err.write(_format_error(exc))
 
         result = g.get("RESULT")
         try:
