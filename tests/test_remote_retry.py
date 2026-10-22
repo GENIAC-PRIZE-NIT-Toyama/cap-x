@@ -67,3 +67,26 @@ def test_no_wait_when_nothing_fails(trial_module, monkeypatch) -> None:
     waits: list[float] = []
     trial_module._run_with_retries(_holder(), None, 1, {}, None, {}, _Env, sleep=waits.append)
     assert waits == []
+
+
+def test_reconnect_failure_keeps_its_message(trial_module, monkeypatch) -> None:
+    """繋ぎ直しに失敗したら、その理由で終わる（閉じた後の None で落ちない）。"""
+    sessions = iter([_Env()])
+
+    def connect(*a, **kw):
+        env = next(sessions, None)
+        if env is None:
+            raise SystemExit("[capacity_full] 同時セッションが上限")
+        return env
+
+    def always(*a, **kw):
+        raise EnvUnavailable("切れた")
+
+    monkeypatch.setattr(trial_module, "_resolve_agent", lambda spec: Path(spec))
+    monkeypatch.setattr(trial_module, "load_agent", lambda *a, **kw: object())
+    monkeypatch.setattr(trial_module, "_connect", connect)
+    monkeypatch.setattr(trial_module, "run_trial", always)
+    monkeypatch.setattr(trial_module, "RETRY_BASE_WAIT_S", 0)
+
+    with pytest.raises(SystemExit, match="同時セッションが上限"):
+        trial_module.main(agent="agent.py", save=False, endpoint="tcp://x:1")

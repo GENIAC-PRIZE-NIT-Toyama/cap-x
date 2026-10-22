@@ -11,6 +11,9 @@
 結果（stdout / stderr）が返ってくる。`env.render()` で今の画像（JPEG）が取れる。
 成功したかどうか（reward）は Agent からは見えない。実行が終わったあと、
 `trial.py` が表示する。
+
+LLM を呼んで起きた例外（タイムアウトなど）は捕まえずにそのまま投げる。`suite.py` は
+例外の種類で「LLM 側の障害」か「Agent の失敗」かを見分けて、前者ならやり直す。
 """
 
 from capx.agent_api import AgentEnv, AgentResult, BaseAgent, Budget, TaskSpec

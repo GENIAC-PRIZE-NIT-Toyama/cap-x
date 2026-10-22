@@ -1,0 +1,30 @@
+# 素早く確かめるためのスイート。robosuite 3 + LIBERO-90 5 + LIBERO-10 2 = 10 タスク。
+#
+#   uv run --env-file .env suite.py suites/quick.yaml --agent agents/my_agent.py
+#
+# full.yaml の部分集合。シーン・操作・難しさがばらけるように選ぶ。
+#
+# 書けるキー:
+#   name       保存先のフォルダ名（suite_<name>）。省略するとファイル名
+#   trials     各タスクの試行回数。省略すると 1
+#   seed       初期配置の seed。書くと全試行で固定、省略すると試行ごとにランダム
+#   max_steps  1 試行で env.step() を呼べる回数。1〜20。省略すると 10
+#              （GPU マシン側の上限が今は 10 なので、上げるまでは 10 で止まる）
+#   tasks      タスク名のリスト（選べる名前は doctor.py で見られる）
+name: quick
+trials: 1
+max_steps: 20
+tasks:
+  # robosuite（3 / 6）: 持ち上げる（易）・積む（中）・差し込む（難）
+  - cube_lifting
+  - cube_stack
+  - nut_assembly
+  # LIBERO-90（5 / 90）
+  - libero_90_6   # KITCHEN_SCENE1 下の引き出しを開ける（関節物体）
+  - libero_90_21  # KITCHEN_SCENE3 コンロをつけてフライパンを載せる（複合）
+  - libero_90_46  # LIVING_ROOM_SCENE1 アルファベットスープをかごに入れる（pick & place）
+  - libero_90_70  # LIVING_ROOM_SCENE6 プリンを皿の右に置く（位置関係）
+  - libero_90_74  # STUDY_SCENE1 本をキャディの左の仕切りに入れる
+  # LIBERO-10（2 / 10）
+  - libero_10_3   # KITCHEN_SCENE4 ボウルを下の引き出しに入れて閉める
+  - libero_10_4   # LIVING_ROOM_SCENE5 2 つのマグをそれぞれの皿に置く

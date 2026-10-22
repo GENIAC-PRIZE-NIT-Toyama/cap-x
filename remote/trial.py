@@ -91,7 +91,9 @@ def main(
     except EnvUnavailable as exc:
         sys.exit(str(explain(exc)))
     finally:
-        holder["env"].close()
+        # やり直しの途中（閉じてから繋ぎ直すまで）に止まると None のまま
+        if holder["env"] is not None:
+            holder["env"].close()
 
     _show(summaries, steps)
 
@@ -109,27 +111,62 @@ def _run_with_retries(holder, runner, trial, config, seed, meta, reconnect, slee
 
     Agent の責任（予算超過・Agent のバグ）ではリトライしない。中断した後の環境は
     状態が分からないので、使い回さず作り直す。やり直した回数は結果に残る。
+    """
+
+    def attempt(retries):
+        if holder["env"] is None:
+            holder["env"] = reconnect()
+        return run_trial(
+            holder["env"], runner, trial, config, seed=seed, meta=meta,
+            infrastructure_retries=retries,
+        )
+
+    def drop_env(exc, retries, gave_up):
+        if not gave_up:  # 使い切ったときは呼び出し元が閉じる
+            holder["env"].close()
+            holder["env"] = None
+
+    return _retry_infra(attempt, on_failure=drop_env, action="新しいセッションでやり直す", sleep=sleep)
+
+
+def _retry_infra(
+    attempt,
+    *,
+    retryable=(EnvUnavailable,),
+    on_failure=None,
+    action="やり直す",
+    describe=lambda exc: str(explain(exc)),
+    sleep=time.sleep,
+):
+    """`attempt(やり直した回数)` を呼び、インフラの失敗なら待ってやり直す。
+
+    やり直しの決まり（回数と待ち時間）はここだけに置く。`suite.py` も使う。
     やり直す前に、失敗のたびに倍にした時間（10 秒、20 秒、40 秒）だけ待つ。
+
+    Args:
+        retryable: やり直す例外の型。
+        on_failure: 失敗のたびに `(例外, やり直した回数, 使い切ったか)` で呼ぶ。
+            後片付けや記録に使う。
+        action: 待つときの表示（「〜秒待って、<action>」）。
+        describe: 例外を表示用の文に直す。
+
+    Raises:
+        やり直しを使い切ったら、最後の例外をそのまま投げる。
     """
     retries = 0
     while True:
         try:
-            return run_trial(
-                holder["env"], runner, trial, config, seed=seed, meta=meta,
-                infrastructure_retries=retries,
-            )
-        except EnvUnavailable as exc:
-            if retries >= MAX_INFRA_RETRIES:
+            return attempt(retries)
+        except retryable as exc:
+            gave_up = retries >= MAX_INFRA_RETRIES
+            if on_failure is not None:
+                on_failure(exc, retries, gave_up)
+            if gave_up:
                 raise
             retries += 1
             wait_s = RETRY_BASE_WAIT_S * 2 ** (retries - 1)
-            print(
-                f"{explain(exc)}\n  {wait_s:.0f} 秒待って、新しいセッションでやり直す"
-                f"（{retries}/{MAX_INFRA_RETRIES}）"
-            )
-            holder["env"].close()
+            print(f"{describe(exc)}\n  {wait_s:.0f} 秒待って、{action}（{retries}/{MAX_INFRA_RETRIES}）")
             sleep(wait_s)
-            holder["env"] = reconnect()
 
 
 #: 結果の既定の置き場所。ローカル実行の `outputs/`（リポジトリ直下）とは分ける。
@@ -140,7 +177,8 @@ def _make_run_dir(root: str | None, model: str, task: str, now: float | None = N
     """`<root>/<モデル名>/<タスク名>/<日時>/` を作って返す。
 
     モデル名の `/` は `_` にする（ローカル実行と同じ）。同じ秒に 2 回実行したときは
-    `_2` などを付けて、前の結果に重ねない。
+    `_2` などを付けて、前の結果に重ねない。`suite.py` はタスク名の代わりに
+    `suite_<名前>` を渡す。
     """
     base = (Path(root) if root else DEFAULT_OUTPUT_ROOT) / (model.replace("/", "_") or "model_unset") / task
     stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
@@ -165,13 +203,18 @@ def _resolve_agent(spec: str) -> Path:
 
 def _connect(endpoint: str | None, server_url: str | None, task: str, record_video: bool = False):
     try:
-        if endpoint:
-            from capx.remote_env.client import RemoteAgentEnv
-
-            return RemoteAgentEnv(endpoint=endpoint, record_video=record_video)
-        return make_agent_env(server_url=server_url, task_id=task, record_video=record_video)
+        return _open_env(endpoint, server_url, task, record_video)
     except Exception as exc:
         sys.exit(f"{explain(exc)}\n  接続先: {endpoint or server_url}")
+
+
+def _open_env(endpoint: str | None, server_url: str | None, task: str, record_video: bool = False):
+    """`_connect` の、失敗しても終了しない版。`suite.py` はやり直しの判断に使う。"""
+    if endpoint:
+        from capx.remote_env.client import RemoteAgentEnv
+
+        return RemoteAgentEnv(endpoint=endpoint, record_video=record_video)
+    return make_agent_env(server_url=server_url, task_id=task, record_video=record_video)
 
 
 def _show(summaries, steps=()) -> None:

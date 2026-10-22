@@ -1,0 +1,54 @@
+# 本評価用のスイート。robosuite 5 + LIBERO-90 20 + LIBERO-10 10 = 35 タスク。
+#
+#   uv run --env-file .env suite.py suites/full.yaml --agent agents/my_agent.py
+#
+# 選び方:
+#   - robosuite は two_arm_lift（両腕）を除く全タスク、LIBERO-10 は全タスク
+#   - LIBERO-90 は、操作の種類・シーン・複雑さが重ならないように 20 を選ぶ
+#     （キッチン 1〜10 は全シーン、リビング・書斎からも選ぶ）
+#   - LIBERO-Spatial / Object / Goal と、LIBERO-PRO の摂動 suite は入れない
+#   - quick.yaml はこの部分集合
+#
+# 書けるキーは quick.yaml を参照。
+name: full
+trials: 1
+max_steps: 20
+tasks:
+  # robosuite（5 / 6。two_arm_lift は入れない）
+  - cube_lifting
+  - cube_stack
+  - cube_restack
+  - nut_assembly
+  - spill_wipe
+  # LIBERO-90（20 / 90）
+  - libero_90_3   # KITCHEN_SCENE10 奥のバターを上の引き出しに入れて閉める（複合・位置の指定）
+  - libero_90_6   # KITCHEN_SCENE1 下の引き出しを開ける（関節物体）
+  - libero_90_9   # KITCHEN_SCENE1 黒いボウルを皿に置く（基本の pick & place）
+  - libero_90_16  # KITCHEN_SCENE2 手前のボウルを真ん中のボウルに重ねる（積む）
+  - libero_90_20  # KITCHEN_SCENE3 コンロをつける（つまみ）
+  - libero_90_21  # KITCHEN_SCENE3 コンロをつけてフライパンを載せる（複合）
+  - libero_90_23  # KITCHEN_SCENE4 下の引き出しを閉めて上を開ける（関節物体 2 つ）
+  - libero_90_27  # KITCHEN_SCENE4 ワインボトルをワインラックに置く
+  - libero_90_32  # KITCHEN_SCENE5 ケチャップを上の引き出しに入れる
+  - libero_90_33  # KITCHEN_SCENE6 電子レンジを閉める
+  - libero_90_37  # KITCHEN_SCENE7 白いボウルを皿の右に置く（位置関係）
+  - libero_90_39  # KITCHEN_SCENE8 コンロを消す
+  - libero_90_42  # KITCHEN_SCENE9 フライパンを棚の下に入れる
+  - libero_90_46  # LIVING_ROOM_SCENE1 アルファベットスープをかごに入れる
+  - libero_90_57  # LIVING_ROOM_SCENE3 クリームチーズをトレイに入れる
+  - libero_90_63  # LIVING_ROOM_SCENE4 ボウルを重ねてトレイに入れる（積む＋複合）
+  - libero_90_68  # LIVING_ROOM_SCENE5 黄白のマグを右の皿に置く（似た物体の区別）
+  - libero_90_70  # LIVING_ROOM_SCENE6 プリンを皿の右に置く（位置関係）
+  - libero_90_74  # STUDY_SCENE1 本をキャディの左の仕切りに入れる
+  - libero_90_89  # STUDY_SCENE4 右の本を棚の下に入れる
+  # LIBERO-10（全 10）
+  - libero_10_0
+  - libero_10_1
+  - libero_10_2
+  - libero_10_3
+  - libero_10_4
+  - libero_10_5
+  - libero_10_6
+  - libero_10_7
+  - libero_10_8
+  - libero_10_9

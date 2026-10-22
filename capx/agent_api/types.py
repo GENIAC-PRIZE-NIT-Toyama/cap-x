@@ -174,7 +174,15 @@ class CapacityFull(EnvUnavailable):
 
 
 class EnvStartFailed(EnvUnavailable):
-    """セッションを作れなかった（選べないタスク・コンテナの起動失敗など）。"""
+    """セッションを作れなかった（選べないタスク・コンテナの起動失敗など）。
+
+    ``status_code`` は backend が返した HTTP ステータス。4xx（認証・タスク名の誤り）は
+    やり直しても直らないので、呼び出し側がやり直すかどうかの判断に使う。
+    """
+
+    def __init__(self, message: str = "", status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @runtime_checkable

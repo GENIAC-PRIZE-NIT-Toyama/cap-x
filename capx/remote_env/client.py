@@ -408,6 +408,6 @@ def _create_session(
         message = f"セッションを作れなかった（{response.status_code}）: {detail}"
         if response.status_code == 429:
             raise CapacityFull(message)
-        raise EnvStartFailed(message)
+        raise EnvStartFailed(message, status_code=response.status_code)
     data = response.json()
     return data["zmq_endpoint"], data["session_id"], data["server_public_key"].encode("ascii")
