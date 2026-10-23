@@ -4,13 +4,14 @@
 任意の import / instantiate の入口になるので、`task_id` という狭い入力を受けて、
 ここで config に展開する。載っていないタスクは作れない。
 
-新しいタスクを出すときは、ここに 1 行足す。
+新しいタスクを出すときは、ここに 1 行足す。Low-Level Primitives で回したいなら
+`LOW_LEVEL_APIS` にも足す（`<タスク名>_low` で選べるようになる）。
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,34 @@ TASKS.update(
     }
 )
 
+#: Low-Level Primitives 版のタスク名に付ける接尾辞。`cube_stack` に対して `cube_stack_low`。
+LOW_SUFFIX = "_low"
+
+#: 元のタスク -> Low-Level 版で使う API。`get_observation` や `solve_ik` などの細かい
+#: 関数だけを渡し、`get_object_pose` や `goto_pose` のような高水準の関数は渡さない。
+#: config は元のタスクのものを使い、`env.cfg.apis` だけを上書きする（関数の説明は API から
+#: 作られ、プロンプトは API に依存しない）。SAM3 / GraspNet / PyRoKi は backend 側の
+#: プロキシにつながるので、config の `api_servers` は関係ない。
+#: two_arm_lift は Low-Level 版の config が独自のプロンプトを持ち、`apis` の差し替えだけでは
+#: 同じにならないので入れない。
+LOW_LEVEL_APIS: dict[str, str] = {
+    "cube_stack": "FrankaControlApiReduced",
+    "cube_lifting": "FrankaControlApiReduced",
+    "cube_restack": "FrankaControlApiReduced",
+    "nut_assembly": "FrankaControlNutAssemblyApiReduced",
+    "spill_wipe": "FrankaControlSpillWipeApiReduced",
+    **{name: "FrankaLiberoApiReduced" for name, entry in TASKS.items() if entry.runtime == "libero"},
+}
+
+TASKS.update(
+    {
+        f"{name}{LOW_SUFFIX}": replace(
+            TASKS[name], overrides=(*TASKS[name].overrides, ("env.cfg.apis", f"[{api}]"))
+        )
+        for name, api in LOW_LEVEL_APIS.items()
+    }
+)
+
 #: runtime -> イメージ名。
 #: 本番では digest で固定する（タグは付け替えられる）:
 #:   CAPX_WORKER_IMAGE=capx-worker@sha256:...
@@ -96,26 +125,27 @@ def limits_for(runtime: str):
 def summarize(names) -> str:
     """タスク名の一覧を、番号つきのものは範囲にまとめて見せる。
 
-    LIBERO だけで 130 あるので、全部を並べると読めない。
-    `libero_object_0` … `libero_object_9` は `libero_object_0〜9` にする。
+    LIBERO だけで 260 ある（Low-Level 版を含む）ので、全部を並べると読めない。
+    `libero_object_0` … `libero_object_9` は `libero_object_0〜9` に、
+    `libero_object_0_low` … `libero_object_9_low` は `libero_object_0〜9_low` にする。
     """
     import re
 
-    groups: dict[str, list[int]] = {}
+    groups: dict[tuple[str, str], list[int]] = {}
     plain: list[str] = []
     for name in names:
-        match = re.fullmatch(r"(.+)_(\d+)", name)
+        match = re.fullmatch(rf"(.+)_(\d+)({re.escape(LOW_SUFFIX)})?", name)
         if match:
-            groups.setdefault(match.group(1), []).append(int(match.group(2)))
+            groups.setdefault((match.group(1), match.group(3) or ""), []).append(int(match.group(2)))
         else:
             plain.append(name)
     parts = sorted(plain)
-    for prefix in sorted(groups):
-        numbers = sorted(groups[prefix])
+    for prefix, suffix in sorted(groups):
+        numbers = sorted(groups[prefix, suffix])
         if numbers == list(range(numbers[0], numbers[-1] + 1)) and len(numbers) > 1:
-            parts.append(f"{prefix}_{numbers[0]}〜{numbers[-1]}")
+            parts.append(f"{prefix}_{numbers[0]}〜{numbers[-1]}{suffix}")
         else:
-            parts.extend(f"{prefix}_{n}" for n in numbers)
+            parts.extend(f"{prefix}_{n}{suffix}" for n in numbers)
     return ", ".join(parts)
 
 

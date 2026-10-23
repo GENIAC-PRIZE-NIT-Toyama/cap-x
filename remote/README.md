@@ -48,6 +48,20 @@ uv run --env-file .env trial.py --task libero_object_3
 今選べる一覧は `doctor.py` でも見られる。LIBERO のタスクは、やること（ゴール文）が
 タスクごとに違う。`task.instruction` に入っている。
 
+### Low-Level Primitives で回す
+
+タスク名の後ろに `_low` を付けると、同じタスクを Low-Level Primitives の API で回せる
+（例 `cube_stack_low`, `libero_90_46_low`）。`two_arm_lift` 以外の全タスクにある。
+シーン・ゴール・判定は同じで、Agent に渡る関数（`task.api_docs`）だけが違う。
+
+| | 主な関数 |
+|---|---|
+| High-Level（`cube_stack` など） | `get_object_pose`, `sample_grasp_pose`, `goto_pose`, `open_gripper` / `close_gripper` |
+| Low-Level（`cube_stack_low` など） | `get_observation`, `segment_sam3_text_prompt` / `segment_sam3_point_prompt`, `plan_grasp`, `get_oriented_bounding_box_from_3d_points`, `solve_ik`, `move_to_joints`, `open_gripper` / `close_gripper` |
+
+Low-Level は 1 つの動作を細かく書くので、ステップ数を多く使いがち。High と比べるときは、
+予算超過（`budget`）で終わった試行の数も見る。
+
 ## 自分の Agent を書く
 
 `agents/example_agent.py` をコピーして中身を書き換える。
@@ -112,6 +126,7 @@ uv run --env-file .env suite.py suites/my_suite.yaml --agent agents/my_agent.py
 |---|---|---|
 | `suites/quick.yaml` | robosuite 3 + LIBERO-90 5 + LIBERO-10 2（10 タスク） | 素早く確かめる。`full` の部分集合 |
 | `suites/full.yaml` | robosuite 5（`two_arm_lift` を除く）+ LIBERO-90 20 + LIBERO-10 全 10（35 タスク） | 本評価 |
+| `suites/quick-low.yaml` / `suites/full-low.yaml` | `quick` / `full` と同じタスクの `_low` 版 | Low-Level Primitives で回し、High と比べる |
 
 LIBERO-90 は、操作の種類・シーン・複雑さが重ならないように選んでいる（理由は YAML のコメント）。
 どちらも `max_steps: 20`。ただし GPU マシン側の上限が今は 10 なので、それを上げるまでは

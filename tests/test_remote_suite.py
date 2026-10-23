@@ -74,7 +74,7 @@ def _count(tasks, prefix: str) -> int:
     return sum(t.startswith(prefix) for t in tasks)
 
 
-@pytest.mark.parametrize("name", ["quick", "full"])
+@pytest.mark.parametrize("name", ["quick", "full", "quick-low", "full-low"])
 def test_bundled_suites_name_tasks_the_server_has(name) -> None:
     from capx.remote_env.server.tasks import TASKS
 
@@ -88,7 +88,7 @@ def test_full_and_quick_suites_have_the_agreed_tasks() -> None:
 
     full = suite.load_suite(REMOTE / "suites" / "full.yaml").tasks
     quick = suite.load_suite(REMOTE / "suites" / "quick.yaml").tasks
-    robosuite = {t for t in TASKS if not t.startswith("libero_")} - {"two_arm_lift"}
+    robosuite = {t for t in TASKS if not t.startswith("libero_") and not t.endswith("_low")} - {"two_arm_lift"}
 
     assert set(robosuite) <= set(full), "robosuite は two_arm_lift（両腕）を除く全タスク"
     assert "two_arm_lift" not in full
@@ -98,6 +98,15 @@ def test_full_and_quick_suites_have_the_agreed_tasks() -> None:
     assert set(quick) <= set(full), "quick は full の部分集合"
     assert (len(quick) - _count(quick, "libero_"), _count(quick, "libero_90_"), _count(quick, "libero_10_")) == (3, 5, 2)
     assert len(quick) == 10
+
+
+@pytest.mark.parametrize("name", ["quick", "full"])
+def test_low_level_suites_mirror_their_high_level_ones(name) -> None:
+    """High と Low の結果を並べて比べるので、タスク・試行回数・予算を揃える。"""
+    high = suite.load_suite(REMOTE / "suites" / f"{name}.yaml")
+    low = suite.load_suite(REMOTE / "suites" / f"{name}-low.yaml")
+    assert low.tasks == tuple(f"{t}_low" for t in high.tasks)
+    assert (low.trials, low.seed, low.max_steps) == (high.trials, high.seed, high.max_steps)
 
 
 # -- max_steps ------------------------------------------------------------
