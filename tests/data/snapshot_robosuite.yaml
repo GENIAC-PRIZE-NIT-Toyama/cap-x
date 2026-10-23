@@ -1,0 +1,10 @@
+# Snapshot の E2E テスト用（tests/test_snapshot_e2e.py）。知覚・IK のサーバに頼らない API で動かす。
+env:
+  _target_: capx.envs.tasks.base.CodeExecutionEnvBase
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level: franka_robosuite_cubes_low_level
+    privileged: true
+    apis:
+      - SnapshotTestJointApi
+    prompt: "Move the arm."

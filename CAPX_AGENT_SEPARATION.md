@@ -81,6 +81,7 @@ flowchart LR
 | 5 | 指標（`task_completion_rate` を主指標に）と成果物 | 済み |
 | 6 | LIBERO 対応 | 済み（このブランチ。§6） |
 | 7 | BEHAVIOR 対応 | 未着手 |
+| — | Snapshot / Resume / Fork（[`docs/Snapshot.md`](docs/Snapshot.md)） | 実装済み。手元（Docker なし）で robosuite / LIBERO の E2E を確認。GPU マシン・MinIO での確認は未 |
 | — | 旧経路の整理 | Phase 6・7 の後に行う（§7） |
 
 Phase 0〜5 は PR #4 で `main` にマージ済み。Phase 6 は `feat/libero-remote-env` から `main` への PR で出す。

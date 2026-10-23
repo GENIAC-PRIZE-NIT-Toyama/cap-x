@@ -88,6 +88,10 @@ class RunSpec:
     task_id: str = ""
     #: config への上書き（許可リストが決めた値だけ）。
     overrides: tuple[tuple[str, str], ...] = ()
+    #: Snapshot から再開する worker。backend が復元するまで step を受け付けない。
+    resume: bool = False
+    #: 1 つの Snapshot の上限（MB）。backend の設定と揃える。
+    snapshot_max_mb: int = 64
 
     @property
     def container_name(self) -> str:
@@ -174,6 +178,9 @@ def run_command(spec: RunSpec) -> list[str]:
     ]
     if spec.task_id:
         cmd += ["--task-id", spec.task_id]
+    cmd += ["--snapshot-max-mb", str(spec.snapshot_max_mb)]
+    if spec.resume:
+        cmd += ["--resume"]
     if spec.overrides:
         cmd += ["--override", *(f"{key}={value}" for key, value in spec.overrides)]
     return cmd

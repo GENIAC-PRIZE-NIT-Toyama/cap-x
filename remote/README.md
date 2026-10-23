@@ -197,6 +197,24 @@ GPU マシン・LLM サーバの障害でやり直した試行は、やり直す
 何が起きたかを動画で追えるが、Langfuse の容量が試行あたり約 2 倍（10 step で 2.5〜3.6MB、
 20 step で 5〜7MB）になる。失敗した試行を 1 つ詳しく見たいときに、`trial.py` で回し直す使い方を想定している。
 
+## 過去の Step から分岐する（Snapshot）
+
+`.env` に `CAPX_SNAPSHOT_ENABLED=true` を書くと、reset の直後と毎 `env.step()` の後に、
+シミュレータと生成コードの変数・関数の状態を GPU マシン側に保存する。Snapshot ID は
+Langfuse の `env.step` の metadata（`snapshot_after`）、`result.json` の `snapshots`、
+`steps/step_NN.log` に残る。
+
+あとで、その ID から新しい worker で再開して、別のコードを試せる。前の Step で定義した
+関数や変数はそのまま使える。元の trial・Trace・Snapshot は変わらない。
+
+```bash
+uv run --env-file .env examples/resume_simple.py --snapshot snap_... --task libero_object_3 --code "print(helper())"
+uv run --env-file .env examples/fork_compare.py --snapshot snap_... --task libero_object_3 --original old.py --fixed new.py
+uv run --env-file .env examples/resume_multiturn.py --snapshot snap_... --task libero_object_3
+```
+
+使い方・仕組み・制約は [docs/Snapshot.md](../docs/Snapshot.md)。
+
 ## 注意
 
 `agents/` のファイルは**あなたの PC でそのまま実行される**。他人の Agent を

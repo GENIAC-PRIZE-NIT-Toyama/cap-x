@@ -1,10 +1,18 @@
 """backend の HTTP。セッションの作成・削除・一覧。
 
-    POST   /sessions          {task_id, client_public_key} -> ZMQ の宛先と鍵
+    POST   /sessions          {task_id, client_public_key[, resume_from]} -> ZMQ の宛先と鍵
+                              （resume_from を渡すと、その Snapshot を戻した新しい worker）
     DELETE /sessions/{id}     返す
     GET    /sessions          空き状況（使用中の数と上限）。id は返さない
+    POST   /sessions/{id}/snapshots  {token, meta} worker が作った Snapshot を保存し id を返す
+    GET    /snapshots         自分の Snapshot の一覧（新しい順）
+    GET    /snapshots/{id}    自分の Snapshot の記録
+    DELETE /snapshots/{id}    自分の Snapshot を消す
     GET    /tasks             選べるタスク
     GET    /health
+
+Snapshot の本体（bytes）を返す口は無い。中身には採点の記録が入るので、クライアントには
+読ませない。backend が worker から取り出して保存先に置き、再開のときに新しい worker に渡す。
 
 認証は任意。`tokens` を渡したときだけ Bearer トークンを求める。既定は認証なしで、
 すでに LAN に出ている知覚 API のサーバと同じ扱い。認証の有無に関わらず、
@@ -34,6 +42,12 @@ REAP_INTERVAL_S = 60.0
 class CreateSession(BaseModel):
     task_id: str
     client_public_key: str
+    resume_from: str | None = None
+
+
+class SaveSnapshot(BaseModel):
+    token: str
+    meta: dict = {}
 
 
 #: `Host` ヘッダの host 部として受け入れる形。ホスト名・IPv4・角括弧付き IPv6。
@@ -129,7 +143,11 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict:
-        return {"status": "ok", "sessions": len(manager.list())}
+        return {
+            "status": "ok",
+            "sessions": len(manager.list()),
+            "snapshots": manager.store is not None,
+        }
 
     @app.get("/tasks")
     async def tasks(_owner: str = Depends(owner_of)) -> dict:
@@ -140,10 +158,12 @@ def create_app(
         body: CreateSession, request: Request, owner: str = Depends(owner_of)
     ) -> dict:
         try:
-            session = await manager.create(owner, body.task_id, body.client_public_key)
+            session = await manager.create(
+                owner, body.task_id, body.client_public_key, resume_from=body.resume_from
+            )
         except SessionError as exc:
             raise HTTPException(exc.status, str(exc)) from None
-        return {
+        reply = {
             "session_id": session.session_id,
             "zmq_endpoint": (
                 f"tcp://{endpoint_host(request, manager.config.public_host)}"
@@ -152,6 +172,57 @@ def create_app(
             "server_public_key": session.server_public_key,
             "task_id": session.task_id,
         }
+        if session.resume is not None:
+            reply["resume"] = session.resume
+        return reply
+
+    @app.post("/sessions/{session_id}/snapshots")
+    async def save_snapshot(session_id: str, body: SaveSnapshot, owner: str = Depends(owner_of)) -> dict:
+        session = manager.get(session_id)
+        if session is None or session.owner != owner:
+            raise HTTPException(404, "そのセッションは無い")
+        try:
+            return await manager.persist_snapshot(session, body.token, body.meta)
+        except SessionError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+
+    def _store():
+        if manager.store is None:
+            raise HTTPException(503, "この backend は Snapshot の保存先が設定されていない")
+        return manager.store
+
+    @app.get("/snapshots")
+    async def list_snapshots(limit: int = 50, owner: str = Depends(owner_of)) -> dict:
+        from capx.snapshot.store import SnapshotStoreError
+
+        try:
+            items = await asyncio.to_thread(_store().list, owner, max(1, min(limit, 500)))
+        except SnapshotStoreError as exc:
+            raise HTTPException(502, str(exc)) from None
+        return {"snapshots": items}
+
+    @app.get("/snapshots/{snapshot_id}")
+    async def get_snapshot(snapshot_id: str, owner: str = Depends(owner_of)) -> dict:
+        from capx.snapshot.store import SnapshotNotFound, SnapshotStoreError
+
+        try:
+            return await asyncio.to_thread(_store().record, owner, snapshot_id)
+        except SnapshotNotFound:
+            raise HTTPException(404, "その Snapshot は無い") from None
+        except SnapshotStoreError as exc:
+            raise HTTPException(502, str(exc)) from None
+
+    @app.delete("/snapshots/{snapshot_id}")
+    async def delete_snapshot(snapshot_id: str, owner: str = Depends(owner_of)) -> dict:
+        from capx.snapshot.store import SnapshotNotFound, SnapshotStoreError
+
+        try:
+            await asyncio.to_thread(_store().delete, owner, snapshot_id)
+        except SnapshotNotFound:
+            raise HTTPException(404, "その Snapshot は無い") from None
+        except SnapshotStoreError as exc:
+            raise HTTPException(502, str(exc)) from None
+        return {"deleted": snapshot_id}
 
     @app.delete("/sessions/{session_id}")
     async def delete(session_id: str, owner: str = Depends(owner_of)) -> dict:

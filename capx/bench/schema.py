@@ -61,9 +61,16 @@ class TrialResult:
     llm: LlmUsage = field(default_factory=LlmUsage)
     steps: list[StepRecord] = field(default_factory=list)
     schema_version: int = SCHEMA_VERSION
+    #: Snapshot を有効にしたときだけ入る（OFF なら result.json に項目ごと出さない）。
+    #: `{"initial": reset 直後の ID, "steps": [各 Step の ID], "resumed_from": 再開した ID,
+    #: "resumed_at_step": 再開した時点の Step 数}`
+    snapshots: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if data["snapshots"] is None:
+            del data["snapshots"]
+        return data
 
 
 def exec_ok(sandbox_rc: int, stderr: str) -> tuple[bool, str]:

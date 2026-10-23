@@ -8,6 +8,10 @@
 見えてしまう。
 
 globals はステップをまたいで持ち越す（現行の `CodeExecutionEnvBase` と同じ）。
+
+Snapshot（`snapshot` / `restore`）では、この globals を cloudpickle で bytes にして
+Gym 側へ返し、新しいプロセスで戻す（`capx.snapshot.namespace`）。復元で pickle を
+解くのはこのプロセスだけ。
 """
 
 from __future__ import annotations
@@ -75,7 +79,15 @@ class _Session:
             return reply.get("value")
 
         call.__name__ = name
+        call.__capx_api__ = name  # Snapshot で、ソケットごと保存せずに差し替える印
         return call
+
+    def _api_stub(self, name: str):
+        """復元した関数が使うスタブ。Namespace にあるもの（同じ名前のスタブ）を優先する。"""
+        from capx.snapshot.namespace import is_stub
+
+        current = self._globals.get(name)
+        return current if is_stub(current, name) else self._stub(name)
 
     def _reset(self, message: dict) -> None:
         self._globals = {
@@ -114,6 +126,29 @@ class _Session:
             "result": result,
         }
 
+    def _snapshot(self, message: dict) -> dict:
+        from capx.snapshot.namespace import NamespaceSnapshotError, dump_namespace
+
+        try:
+            data, info = dump_namespace(self._globals, max_bytes=int(message["max_bytes"]))
+        except NamespaceSnapshotError as exc:
+            return {"op": "snapshot", "ok": False, "error": str(exc)}
+        except Exception as exc:  # 想定外。原因を Gym 側に返して、Snapshot だけを失敗させる
+            return {"op": "snapshot", "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"op": "snapshot", "ok": True, "data": data, **info}
+
+    def _restore(self, message: dict) -> dict:
+        from capx.snapshot.namespace import NamespaceSnapshotError, load_namespace
+
+        self._globals["INPUTS"] = message.get("inputs") or {}
+        try:
+            names = load_namespace(message["data"], self._globals, self._api_stub)
+        except NamespaceSnapshotError as exc:
+            return {"op": "restored", "ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"op": "restored", "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"op": "restored", "ok": True, "names": names}
+
     def serve(self) -> None:
         while True:
             try:
@@ -126,6 +161,10 @@ class _Session:
                 rpc.send(self._sock, {"op": "ready"})
             elif op == "exec":
                 rpc.send(self._sock, self._exec(message))
+            elif op == "snapshot":
+                rpc.send(self._sock, self._snapshot(message))
+            elif op == "restore":
+                rpc.send(self._sock, self._restore(message))
             elif op == "exit":
                 return
 

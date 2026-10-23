@@ -209,6 +209,8 @@ def save_trial_extras(
     for i, step in enumerate(steps, 1):
         (steps_dir / f"step_{i:02d}.py").write_text(step.code, encoding="utf-8")
         log = f"ok: {step.ok}\nexecution_time_s: {step.execution_time_s:.3f}\n"
+        if getattr(step, "snapshot_id", None):
+            log += f"snapshot_id: {step.snapshot_id}\n"
         log += f"--- stdout ---\n{step.stdout}\n--- stderr ---\n{step.stderr}\n"
         (steps_dir / f"step_{i:02d}.log").write_text(log, encoding="utf-8")
 

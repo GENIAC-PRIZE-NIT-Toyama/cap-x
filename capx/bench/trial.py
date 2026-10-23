@@ -43,6 +43,7 @@ def run_trial(
     allow_reference_code: bool = False,
     meta: dict[str, Any] | None = None,
     infrastructure_retries: int = 0,
+    resumed: bool = False,
 ) -> TrialSummary:
     """1 trial を回して `TrialSummary` を返す。
 
@@ -59,11 +60,18 @@ def run_trial(
             入れる。`OracleAgent` を回すときだけ。
         meta: 結果に添える情報（`agent_spec` / `model` など）。
         infrastructure_retries: この trial のために環境を作り直した回数。
+        resumed: Snapshot から再開した env（`RemoteAgentEnv(resume_from=...)`）で回す。
+            reset せず、再開した時点から Agent を走らせる（Fork）。`env.task` を使う。
     """
     started = time.time()
     budget = budget or Budget()
 
-    task = env.reset_for_trial(trial, seed)
+    if resumed:
+        task = env.task
+        if task is None:
+            raise ValueError("resumed=True には、Snapshot から再開した env が要る（resume_from）")
+    else:
+        task = env.reset_for_trial(trial, seed)
     if allow_reference_code:
         oracle = getattr(env.inner, "oracle_code", None)
         if oracle:
@@ -219,7 +227,21 @@ def _build_result(
         git=git_info(),
         llm=usage,
         steps=[StepRecord(i, s.ok, round(s.execution_time_s, 3)) for i, s in enumerate(steps, 1)],
+        snapshots=_snapshots(env, steps),
     )
+
+
+def _snapshots(env, steps) -> dict[str, Any] | None:
+    """Snapshot の ID（有効なときだけ）。成功・失敗の対や、直したコードのデータを作るときに使う。"""
+    if not getattr(env, "snapshot_enabled", False) and not getattr(env, "resume_from", None):
+        return None
+    info = getattr(env, "resume_info", None) or {}
+    return {
+        "initial": getattr(env, "initial_snapshot_id", None),
+        "steps": [getattr(s, "snapshot_id", None) for s in steps],
+        "resumed_from": getattr(env, "resume_from", None),
+        "resumed_at_step": info.get("agent_step"),
+    }
 
 
 def _with_reference_code(task, code: str):

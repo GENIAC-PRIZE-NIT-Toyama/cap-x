@@ -4,6 +4,11 @@
 使われなくなったら片付ける、だけ。コードと画像は手元PC と worker の間を
 ZMQ で直接流れる。
 
+例外は Snapshot。worker が作った Snapshot の bytes を backend が取り出して保存先
+（MinIO）に置き、再開のときは保存先から読んで新しい worker に渡す。bytes はクライアントを
+通らない（クライアントが作った bytes を worker に戻させない）。backend は bytes の形と
+sha256 を確かめるだけで、pickle は解かない。
+
 docker の実行は `runner` として差し替えられる。本番は subprocess だが、
 テストでは記録するだけの偽物を渡して、docker 無しでロジックを確かめる。
 """
@@ -17,6 +22,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from itertools import cycle
+from typing import Any
 
 from capx.remote_env.server import docker as dk
 from capx.remote_env.server.tasks import IMAGES, limits_for, resolve
@@ -25,6 +31,14 @@ logger = logging.getLogger("capx.server")
 
 Runner = Callable[[list[str]], Awaitable[tuple[int, str, str]]]
 Prober = Callable[["Session"], Awaitable[dict | None]]
+#: `call(session, operation, timeout_s, **payload)`。worker の Snapshot の取り出しと復元。
+Caller = Callable[..., Awaitable[dict]]
+
+#: worker から Snapshot を取り出す・worker に戻すのを待つ上限。
+SNAPSHOT_FETCH_TIMEOUT_S = 120.0
+RESTORE_TIMEOUT_S = 600.0
+#: クライアントが Snapshot に添える情報（Trace の id・Agent の状態など）の上限。
+MAX_SNAPSHOT_META_BYTES = 64 * 1024
 
 
 async def subprocess_runner(cmd: list[str]) -> tuple[int, str, str]:
@@ -52,6 +66,9 @@ class Session:
     server_public_key: str
     created: float = field(default_factory=time.monotonic)
     missed_pings: int = 0
+    #: Snapshot から再開したセッションなら、その id と、クライアントに渡す再開の情報。
+    resumed_from: str | None = None
+    resume: dict | None = None
 
 
 class PortAllocator:
@@ -98,6 +115,11 @@ class Config:
     worker_env: dict[str, str] = field(default_factory=dict)
     """全 worker に渡す設定（秘密ではないもの）。例: `MOLMO2_VLM_MODEL`。"""
 
+    snapshot_max_bytes: int = 64 * 1024 * 1024
+    """1 つの Snapshot の上限。worker が作るときと、backend が受け取る・読むときに見る。
+    生成コードの変数に画像を何枚も持つと大きくなる。worker のメモリ上限（4〜5GB）の中で、
+    保存の途中に一時的に数倍のメモリを使うので、大きくしすぎない。"""
+
 
 class SessionManager:
     def __init__(
@@ -106,10 +128,15 @@ class SessionManager:
         *,
         runner: Runner = subprocess_runner,
         prober: Prober | None = None,
+        caller: Caller | None = None,
+        store: Any = None,
     ) -> None:
         self.config = config
         self._run = runner
         self._probe = prober
+        self._call = caller
+        #: Snapshot の置き場所（`capx.snapshot.store`）。None なら Snapshot は使えない。
+        self.store = store
         self._sessions: dict[str, Session] = {}
         self._ports = PortAllocator(config.port_start, config.port_end)
         self._gpus = cycle(config.gpu_devices)
@@ -118,13 +145,28 @@ class SessionManager:
 
     # -- 作る --------------------------------------------------------------
 
-    async def create(self, owner: str, task_id: str, client_public_key: str) -> Session:
+    async def create(
+        self,
+        owner: str,
+        task_id: str,
+        client_public_key: str,
+        resume_from: str | None = None,
+    ) -> Session:
+        """セッションを作る。`resume_from` を渡すと、その Snapshot を新しい worker に戻してから返す。
+
+        再開は、元のセッションを使わない。新しいコンテナを起こし、Snapshot を戻す。
+        戻せなければコンテナを片付けて失敗を返す（中途半端な状態のセッションを渡さない）。
+        """
         try:
             entry = resolve(task_id)
         except KeyError as exc:
             raise SessionError(str(exc.args[0]), 400) from None
         if not _looks_like_curve_key(client_public_key):
             raise SessionError("client_public_key が CURVE の公開鍵の形でない", 400)
+
+        # 先に Snapshot を読んで確かめる。無い・他人のもの・壊れている・タスクが違うなら、
+        # コンテナを起こす前に断る。
+        snapshot = await self._load_snapshot(owner, task_id, resume_from) if resume_from else None
 
         # 同じ人が何個でも同時に作れる。ターミナルを 3 つ開けば 3 セッション動く。
         # 「同じ持ち主が新しく作ったら古いのを閉じる」にすると、それを壊す。
@@ -152,10 +194,16 @@ class SessionManager:
             config_path=entry.config_path,
             task_id=task_id,
             overrides=entry.overrides,
-            env=dict(self.config.worker_env),
+            env={
+                **self.config.worker_env,
+                # Snapshot の取り出しと復元を、この鍵の接続（backend）だけに許す
+                "CAPX_BACKEND_PUBLIC_KEY": self._probe_public_key(),
+            },
             host_port=port,
             gpu_device=next(self._gpus),
             limits=limits,
+            resume=snapshot is not None,
+            snapshot_max_mb=max(1, self.config.snapshot_max_bytes // (1024 * 1024)),
             secrets={
                 "CAPX_CURVE_SERVER_SECRET": server_secret.decode("ascii"),
                 # クライアントの鍵に加え、backend 自身の生存確認用の鍵も許可する
@@ -170,17 +218,142 @@ class SessionManager:
             task_id=task_id,
             spec=spec,
             server_public_key=server_public.decode("ascii"),
+            resumed_from=resume_from if snapshot else None,
         )
         self._sessions[session_id] = session  # 失敗時に片付けられるよう先に登録
 
         try:
             await self._start(spec)
             await self._wait_ready(session)
+            if snapshot is not None:
+                session.resume = await self._restore(session, *snapshot)
         except Exception:
             await self.close(session_id)
             raise
-        logger.info("session %s ready (owner=%s task=%s port=%d)", session_id, owner, task_id, port)
+        logger.info(
+            "session %s ready (owner=%s task=%s port=%d%s)",
+            session_id, owner, task_id, port, f" resume_from={resume_from}" if snapshot else "",
+        )
         return session
+
+    # -- Snapshot ----------------------------------------------------------
+
+    def _require_store(self) -> Any:
+        if self.store is None:
+            raise SessionError(
+                "この backend は Snapshot の保存先が設定されていない（管理者に CAPX_SNAPSHOT_S3_* を頼む）",
+                503,
+            )
+        if self._call is None:
+            raise SessionError("この backend は worker と Snapshot を受け渡せない", 503)
+        return self.store
+
+    async def _load_snapshot(self, owner: str, task_id: str, snapshot_id: str) -> tuple[bytes, dict]:
+        from capx.snapshot import blob as snapshot_blob
+        from capx.snapshot.store import SnapshotNotFound, SnapshotStoreError
+
+        store = self._require_store()
+        try:
+            data, record = await asyncio.to_thread(store.get, owner, snapshot_id)
+        except SnapshotNotFound:
+            raise SessionError(
+                f"Snapshot {snapshot_id} は無い（id が違うか、別の人のもの・消したもの）", 404
+            ) from None
+        except SnapshotStoreError as exc:
+            raise SessionError(str(exc), 502) from None
+        if record.get("task_id") != task_id:
+            raise SessionError(
+                f"Snapshot {snapshot_id} はタスク {record.get('task_id')} のもの（指定は {task_id}）", 400
+            )
+        try:
+            manifest, _ = snapshot_blob.read(data, max_bytes=self.config.snapshot_max_bytes)
+        except snapshot_blob.SnapshotFormatError as exc:
+            raise SessionError(f"Snapshot {snapshot_id} を使えない: {exc}", 422) from None
+        if manifest.get("task_id") != task_id:
+            raise SessionError(f"Snapshot {snapshot_id} の中身のタスクが記録と違う", 422)
+        return data, record
+
+    async def _restore(self, session: Session, data: bytes, record: dict) -> dict:
+        from capx.remote_env.server.probe import WorkerCallError
+
+        try:
+            reply = await self._call(session, "restore", RESTORE_TIMEOUT_S, data=data)
+        except WorkerCallError as exc:
+            raise SessionError(f"Snapshot {record['snapshot_id']} から復元できなかった: {exc}", 500) from None
+        return {
+            **reply["resume"],
+            "snapshot_id": record["snapshot_id"],
+            "meta": record.get("meta") or {},
+            "restore_s": reply.get("restore_s"),
+        }
+
+    async def persist_snapshot(self, session: Session, token: str, meta: dict | None = None) -> dict:
+        """worker が手元に置いた Snapshot を取り出し、確かめてから保存先に置く。記録を返す。
+
+        保存先に置き終わってから id を返す。途中で失敗したら id は返さない。
+        """
+        import json
+
+        from capx.remote_env.server.probe import WorkerCallError
+        from capx.snapshot import blob as snapshot_blob
+        from capx.snapshot.store import SnapshotStoreError, new_id
+
+        store = self._require_store()
+        meta = meta or {}
+        try:
+            meta_bytes = len(json.dumps(meta, ensure_ascii=False))
+        except (TypeError, ValueError):
+            raise SessionError("Snapshot に添える情報（meta）が JSON にできない", 400) from None
+        if meta_bytes > MAX_SNAPSHOT_META_BYTES:
+            raise SessionError(f"Snapshot に添える情報（meta）が大きすぎる（{meta_bytes} バイト）", 400)
+
+        started = time.monotonic()
+        try:
+            reply = await self._call(session, "snapshot_fetch", SNAPSHOT_FETCH_TIMEOUT_S, token=token)
+        except WorkerCallError as exc:
+            raise SessionError(f"worker から Snapshot を取り出せない: {exc}", 409) from None
+        data = bytes(reply["data"])
+        fetched = time.monotonic()
+        try:
+            manifest, _ = snapshot_blob.read(data, max_bytes=self.config.snapshot_max_bytes)
+        except snapshot_blob.SnapshotFormatError as exc:
+            raise SessionError(f"worker の Snapshot が壊れている: {exc}", 502) from None
+        if manifest.get("task_id") != session.task_id:
+            raise SessionError("worker の Snapshot のタスクがセッションと違う", 502)
+
+        snapshot_id = new_id()
+        record = {
+            "snapshot_id": snapshot_id,
+            "schema": snapshot_blob.SCHEMA_VERSION,
+            "owner": session.owner,
+            "task_id": session.task_id,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "size_bytes": len(data),
+            "sha256": snapshot_blob.sha256(data),
+            "agent_step": manifest.get("agent_step"),
+            "trial": manifest.get("trial"),
+            "seed": manifest.get("seed"),
+            "session_id": session.session_id,
+            "resumed_from": session.resumed_from,
+            "worker_image": session.spec.image,
+            "env_class": manifest.get("env_class"),
+            "model_signature": (manifest.get("gym") or {}).get("model_signature"),
+            "namespace": manifest.get("namespace"),
+            "sections": manifest.get("sections"),
+            "versions": manifest.get("versions"),
+            "meta": meta,
+        }
+        try:
+            await asyncio.to_thread(store.put, session.owner, snapshot_id, data, record)
+        except SnapshotStoreError as exc:
+            raise SessionError(str(exc), 502) from None
+        stored = time.monotonic()
+        logger.info(
+            "snapshot %s saved (session=%s step=%s %.0fKB fetch=%.2fs put=%.2fs)",
+            snapshot_id, session.session_id, record["agent_step"], len(data) / 1024,
+            fetched - started, stored - fetched,
+        )
+        return {**record, "timing": {"fetch_s": round(fetched - started, 4), "put_s": round(stored - fetched, 4)}}
 
     def reserved_memory_bytes(self) -> int:
         """使用中のセッションに貸しているメモリの合計（各セッションの上限の和）。"""
