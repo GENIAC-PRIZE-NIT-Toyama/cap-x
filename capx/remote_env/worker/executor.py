@@ -29,6 +29,9 @@ from capx.remote_env.worker import rpc
 
 logger = logging.getLogger("capx.worker")
 
+#: Namespace の保存・復元を待つ上限。変数の `__reduce__` などで止まり続けたときの安全網。
+SNAPSHOT_TIMEOUT_S = 120.0
+
 #: policy プロセスに渡す環境変数。CURVE の秘密鍵などは渡さない。
 _CHILD_ENV_KEYS = ("PATH", "PYTHONPATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "MPLCONFIGDIR", "VIRTUAL_ENV")
 
@@ -126,6 +129,70 @@ class ProcessExecutor:
                     "stderr": message.get("stderr", ""),
                     "result": message.get("result"),
                 }
+
+    # -- Snapshot ----------------------------------------------------------
+
+    def snapshot(self, *, max_bytes: int, timeout_s: float = SNAPSHOT_TIMEOUT_S) -> tuple[bytes, dict]:
+        """policy プロセスの globals を bytes にしてもらう。pickle はここでは解かない。
+
+        保存できない変数があるときは `NamespaceSnapshotError`（理由つき）。プロセスは
+        そのまま使い続けられる。
+
+        Returns:
+            (bytes, {"names": [...], "excluded": [...]})
+        """
+        from capx.snapshot.namespace import NamespaceSnapshotError
+
+        if not self._alive():
+            raise NamespaceSnapshotError(
+                "生成コードのプロセスが動いていない（前のステップが時間切れか異常終了）。"
+                "変数が失われているので保存しない"
+            )
+        reply = self._request({"op": "snapshot", "max_bytes": max_bytes}, timeout_s, "snapshot")
+        if not reply.get("ok"):
+            raise NamespaceSnapshotError(reply.get("error") or "Namespace を保存できない")
+        data = reply.get("data")
+        if not isinstance(data, bytes):
+            raise NamespaceSnapshotError("policy プロセスの応答が bytes でない")
+        return data, {"names": list(reply.get("names", [])), "excluded": list(reply.get("excluded", []))}
+
+    def restore(self, data: bytes, inputs: dict[str, Any], function_names: list[str]) -> list[str]:
+        """新しい policy プロセスを起こし、保存した globals を戻す。戻した名前を返す。"""
+        from capx.snapshot.namespace import NamespaceSnapshotError
+
+        self._inputs = inputs
+        self._function_names = list(function_names)
+        self._stop()
+        self._start()
+        reply = self._request(
+            {"op": "restore", "data": data, "inputs": _sendable(inputs)}, SNAPSHOT_TIMEOUT_S, "restore"
+        )
+        if not reply.get("ok"):
+            raise NamespaceSnapshotError(reply.get("error") or "Namespace を復元できない")
+        return list(reply.get("names", []))
+
+    def _request(self, message: dict, timeout_s: float, what: str) -> dict:
+        """API 呼び出しを挟まない 1 往復。時間切れ・異常終了ならプロセスを止める。"""
+        from capx.snapshot.namespace import NamespaceSnapshotError
+
+        assert self._sock is not None
+        try:
+            rpc.send(self._sock, message)
+            self._sock.settimeout(timeout_s)
+            reply = rpc.recv(self._sock)
+        except TimeoutError:
+            self._killed(f"{what} が {timeout_s:.0f}s で終わらなかった")
+            raise NamespaceSnapshotError(
+                f"生成コードの変数の {what} が {timeout_s:.0f}s で終わらなかった。プロセスを止めた"
+                "（変数は失われた）"
+            ) from None
+        except (rpc.RpcClosed, OSError) as exc:
+            self._killed(f"{what} の途中で生成コードのプロセスが異常終了した")
+            raise NamespaceSnapshotError(f"{what} の途中で生成コードのプロセスが異常終了した: {exc}") from None
+        finally:
+            if self._sock is not None:
+                self._sock.settimeout(None)
+        return reply
 
     def _serve_call(self, message: dict, functions: dict[str, Callable[..., Any]]) -> None:
         assert self._sock is not None

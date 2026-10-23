@@ -8,6 +8,11 @@
     └─ ...         呼ばれた順に並ぶ
     score: reward / task_completed / exec_ok / failure_kind
 
+Snapshot を有効にした env なら、trace の input と metadata に reset 直後の Snapshot ID
+（`initial_snapshot_id`）を、各 env.step の metadata に `agent_step` / `snapshot_before` /
+`snapshot_after` を付ける。Snapshot から再開した実行（Fork）は `fork_trace` で新しい trace に
+し、元の trace / observation / Snapshot ID を metadata（`parent_trace_id` など）に残す。
+
 Agent の作者は何もしなくてよい。`langfuse.openai` を読み込むと OpenAI SDK のメソッドが
 クラスごと書き換わるので、同梱の `query_model` も、Agent が自分で作った `OpenAI()` も
 記録される。OpenAI SDK 以外（anthropic など）の呼び出しは記録されない。
@@ -85,10 +90,12 @@ def trial_trace(
     agent_path: str | Path,
     tags: list[str],
     infra_errors: tuple[type[BaseException], ...] = (),
+    metadata: dict[str, Any] | None = None,
 ) -> Iterator[TrialTrace]:
     """1 attempt を 1 トレースで包む。
 
     例外はそのまま投げる。`infra_errors` の例外なら `infra_failed` タグを付ける。
+    `metadata` は trace の metadata に足す（値は 200 文字までの文字列になる）。
     """
     if _client is None:
         yield TrialTrace(None)
@@ -110,6 +117,7 @@ def trial_trace(
             "attempt": attempt,
             "model": model,
             "agent": agent_path.name,
+            **{k: v for k, v in (metadata or {}).items() if v is not None},
         },
     )
     with _client.start_as_current_observation(as_type="span", name=task) as span, attributes:
@@ -123,27 +131,124 @@ def trial_trace(
             raise
 
 
+@contextmanager
+def fork_trace(
+    *,
+    session: str,
+    task: str,
+    snapshot_id: str,
+    fork_type: str,
+    model: str,
+    agent_path: str | Path,
+    parent_trace_id: str | None = None,
+    parent_observation_id: str | None = None,
+    trial: int | None = None,
+    seed: int | None = None,
+    tags: list[str] | None = None,
+    infra_errors: tuple[type[BaseException], ...] = (),
+) -> Iterator[TrialTrace]:
+    """Snapshot から再開した実行（Fork）を、新しい 1 トレースで包む。
+
+    元の trace とは metadata でつなぐ（Langfuse の検索で `fork_snapshot_id` などを引ける）。
+    `parent_trace_id` / `parent_observation_id` を省略しても、`wrap` した env が Snapshot の
+    記録から持っていれば（`resume_info["meta"]`）、そちらを使う。
+
+    Args:
+        fork_type: 分岐の種類。`human_edit`（人が直したコード）/ `best_of_n` / `retry` /
+            `resume`（同じ Agent で続けるだけ）など。自由な文字列。
+    """
+    fork = {
+        "fork_snapshot_id": snapshot_id,
+        "fork_type": fork_type,
+        "parent_trace_id": parent_trace_id,
+        "parent_observation_id": parent_observation_id,
+    }
+    with trial_trace(
+        session=session,
+        task=task,
+        trial=trial if trial is not None else 0,
+        seed=seed,
+        attempt=1,
+        model=model,
+        agent_path=agent_path,
+        tags=["fork", f"fork:{fork_type}", *(tags or [])],
+        infra_errors=infra_errors,
+        metadata=fork,
+    ) as trace:
+        trace._fork = fork
+        yield trace
+
+
 class TrialTrace:
     """`trial_trace` が返す。無効なときは全部何もしない。"""
 
     def __init__(self, span: Any) -> None:
         self._span = span
+        self._fork: dict[str, Any] | None = None
+
+    @property
+    def trace_id(self) -> str | None:
+        return None if self._span is None else self._span.trace_id
+
+    @property
+    def url(self) -> str | None:
+        if self._span is None:
+            return None
+        try:
+            return _client.get_trace_url(trace_id=self._span.trace_id)
+        except Exception:
+            return None
 
     def wrap(self, env: Any) -> Any:
-        """`step` を記録する env にする。無効なら env をそのまま返す。"""
-        return env if self._span is None else TracedEnv(env, self)
+        """`step` を記録する env にする。無効なら env をそのまま返す。
 
-    def set_task(self, task: Any, trial: int) -> None:
+        Snapshot から再開した env なら、再開した時点の情報を trace の input に入れる。
+        """
+        if self._span is None:
+            return env
+        if getattr(env, "resume_from", None):
+            self.set_resume(env)
+        return TracedEnv(env, self)
+
+    def set_task(self, task: Any, trial: int, snapshot_id: str | None = None) -> None:
         if self._span is None:
             return
         # dataset の item にしやすいよう、再現に要るものを input にまとめる
+        data = {
+            "task_id": task.task_id,
+            "instruction": task.instruction,
+            "seed": task.seed,
+            "trial": trial,
+        }
+        if snapshot_id:
+            data["initial_snapshot_id"] = snapshot_id
+            self._span.update(metadata={"initial_snapshot_id": snapshot_id})
+        self._span.update(input=data)
+
+    def set_resume(self, env: Any) -> None:
+        """再開した env の情報（どの Snapshot の何 Step 目からか、元の trace）を input にする。"""
+        if self._span is None:
+            return
+        info = getattr(env, "resume_info", None) or {}
+        meta = info.get("meta") or {}
+        fork = dict(self._fork or {})
+        # 元の trace / observation は、Snapshot を保存したときの記録から補う
+        fork.setdefault("fork_snapshot_id", env.resume_from)
+        if not fork.get("parent_trace_id"):
+            fork["parent_trace_id"] = meta.get("trace_id")
+        if not fork.get("parent_observation_id"):
+            fork["parent_observation_id"] = meta.get("observation_id")
+        task = getattr(env, "task", None)
         self._span.update(
             input={
-                "task_id": task.task_id,
-                "instruction": task.instruction,
-                "seed": task.seed,
-                "trial": trial,
-            }
+                "task_id": getattr(task, "task_id", None),
+                "instruction": getattr(task, "instruction", None),
+                "seed": getattr(task, "seed", None),
+                "resume_from": env.resume_from,
+                "agent_step": info.get("agent_step"),
+                **fork,
+            },
+            metadata={k: v for k, v in fork.items() if v is not None},
         )
 
     def finish(self, summary: Any) -> None:
@@ -200,9 +305,14 @@ class TracedEnv:
         self._trace = trace
 
     def step(self, code: str, *, capture_video: bool = False):
+        before = getattr(self._env, "last_snapshot_id", None)
         with _client.start_as_current_observation(
             as_type="tool", name="env.step", input={"code": _code_block(code, "python")}
         ) as obs:
+            # Snapshot の記録に、この env.step の trace / observation を残す（Fork から辿れる）
+            context = getattr(self._env, "snapshot_context", None)
+            if isinstance(context, dict):
+                context.update(trace_id=obs.trace_id, observation_id=obs.id)
             try:
                 result = self._env.step(code, capture_video=capture_video)
             except BudgetExceeded as exc:  # Agent の予算超過。送らずに止めた
@@ -218,15 +328,35 @@ class TracedEnv:
                 output["video"] = LangfuseMedia(
                     content_type=result.video_media_type or "video/mp4", content_bytes=result.video
                 )
-            obs.update(output=output, level="DEFAULT" if result.ok else "WARNING")
+            obs.update(
+                output=output,
+                level="DEFAULT" if result.ok else "WARNING",
+                metadata=self._snapshot_metadata(before, result),
+            )
             return result
+
+    def _snapshot_metadata(self, before: str | None, result: Any) -> dict[str, Any] | None:
+        if not getattr(self._env, "snapshot_enabled", False) and not getattr(result, "snapshot_id", None):
+            return None
+        meta = {
+            "agent_step": getattr(self._env, "agent_step", None),
+            "snapshot_before": before,
+            "snapshot_after": result.snapshot_id,
+        }
+        error = getattr(self._env, "last_snapshot_error", None)
+        if result.snapshot_id is None and error:
+            meta["snapshot_error"] = error[:2000]
+        return meta
 
     def render(self, camera: str = "main") -> bytes:
         return self._env.render(camera)
 
     def reset_for_trial(self, trial: int, seed: int | None = None):
+        context = getattr(self._env, "snapshot_context", None)
+        if isinstance(context, dict) and self._trace._span is not None:
+            context.update(trace_id=self._trace._span.trace_id, observation_id=self._trace._span.id)
         task = self._env.reset_for_trial(trial, seed)
-        self._trace.set_task(task, trial)
+        self._trace.set_task(task, trial, snapshot_id=getattr(self._env, "initial_snapshot_id", None))
         return task
 
     def __getattr__(self, name: str) -> Any:

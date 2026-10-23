@@ -70,6 +70,7 @@ source .envrc
 | `CAPX_GPU_UUIDS` | worker に割り当てる GPU（`nvidia-smi -L` の UUID をカンマ区切り）。省略すると全 GPU が見える |
 | `CAPX_ENV_SERVER_TOKENS` | 認証を有効にするときだけ（`名前:トークン` をカンマ区切り）。既定は認証なし |
 | `CAPX_WORKER_MEMORY_ROBOSUITE` / `CAPX_WORKER_MEMORY_LIBERO` | worker 1 つのメモリの上限を変えるときだけ（既定 `4g` / `5g`） |
+| `CAPX_SNAPSHOT_S3_ENDPOINT` / `CAPX_SNAPSHOT_S3_BUCKET` / `CAPX_SNAPSHOT_S3_ACCESS_KEY_ID` / `CAPX_SNAPSHOT_S3_SECRET_ACCESS_KEY` | Snapshot / Resume / Fork を使うときだけ。保存先の MinIO（[Snapshot.md の 4 章](Snapshot.md#4-管理者向け-セットアップ)）。無ければ Snapshot は使えない（通常の trial はそのまま動く） |
 
 ## 5. backend を起動する
 
@@ -87,6 +88,7 @@ uv run --no-sync --active -m capx.remote_env.server
 | `--memory-budget-gb` | 100 | 全 worker のメモリの上限の合計。このマシンの RAM から OS などの分を残した値にする |
 | `--idle-ttl-min` / `--max-lifetime-min` | 20 / 120 | 使われていないセッションと、長すぎるセッションを回収するまでの時間（分） |
 | `--public-host` | なし | 参加者に教える ZMQ の宛先。省略すると、参加者が繋いだ宛先をそのまま使う |
+| `--snapshot-max-mb` | 64 | 1 つの Snapshot の上限（MB）。worker にも同じ値を渡す |
 
 起動すると、前回の backend が残した worker を片付けてから受け付けを始める。止めるときは Ctrl-C（動いている worker も片付ける）。
 

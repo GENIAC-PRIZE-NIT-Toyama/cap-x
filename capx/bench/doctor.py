@@ -70,6 +70,21 @@ def check_server(server_url: str | None) -> list[Check]:
         ]
     checks = [Check("GPU マシン", True, f"{base} に届いた")]
 
+    # Snapshot を有効にしているのに、GPU マシン側に保存先が無い（保存が毎回失敗する）
+    from capx.remote_env.client import snapshot_enabled_from_env
+
+    if snapshot_enabled_from_env(None):
+        available = health.json().get("snapshots")
+        checks.append(
+            Check(
+                "Snapshot",
+                bool(available),
+                "保存できる" if available else "GPU マシンに保存先が設定されていない",
+                "" if available else "管理者に Snapshot の保存先（docs/Snapshot.md の 4 章）を頼むか、"
+                "CAPX_SNAPSHOT_ENABLED を外す",
+            )
+        )
+
     token = os.environ.get("CAPX_ENV_SERVER_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:

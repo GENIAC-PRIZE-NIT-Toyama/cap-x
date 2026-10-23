@@ -49,6 +49,8 @@ class RecordedStep:
     truncated: bool = False
     #: このステップのターン動画（mp4）。Remote で `record_video` のときだけ入る。
     video: bytes | None = None
+    #: この Step が終わった時点の Snapshot ID。Snapshot を有効にした Remote でだけ入る。
+    snapshot_id: str | None = None
 
 
 @dataclass
@@ -99,6 +101,13 @@ class LocalAgentEnv:
         self._closed = False
         # trial の開始時刻。`trial_wall_clock_s`（LLM 待ちも含む全体の上限）を測る。
         self._trial_started = time.monotonic()
+        # Snapshot に残す、今の trial の番号と seed と TaskSpec。
+        self._trial: int | None = None
+        self._seed: int | None = None
+        self._task: TaskSpec | None = None
+        self._reset_rngs: dict[str, Any] | None = None
+        # 復元のとき、次の reset の直前に戻す乱数（`restore` が入れる）
+        self._restore_rngs: dict[str, Any] | None = None
 
     # -- Bench 専用 --------------------------------------------------------
 
@@ -110,6 +119,9 @@ class LocalAgentEnv:
         されない（docs/RemoteDevelopment.md の Phase 0B 節）。
         """
         seed = trial if seed is None else seed
+        # reset の直前の乱数。Snapshot から戻すとき、同じ乱数で reset して同じモデルを作る
+        # （robosuite / LIBERO は reset のたびに、乱数で物体の大きさや位置を決めてモデルを作り直す）
+        self._reset_rngs = self._capture_rngs()
         obs, info = self._env.reset(options={"trial": trial}, seed=seed)
         self._trial_started = time.monotonic()
 
@@ -126,8 +138,9 @@ class LocalAgentEnv:
         self._last_info = {"sandbox_rc": -1, "stdout": "", "stderr": ""}
         self._last_reward = 0.0
         self._last_terminated = self._last_truncated = False
+        self._trial, self._seed = trial, seed
 
-        return TaskSpec(
+        self._task = TaskSpec(
             task_id=self._task_id or type(self._env).__name__,
             seed=seed,
             instruction=info.get("task_prompt") or "",
@@ -138,6 +151,177 @@ class LocalAgentEnv:
             cameras=self._camera_names(),
             reference_code=None,
         )
+        return self._task
+
+    # -- Snapshot（worker が呼ぶ） -------------------------------------------
+
+    def snapshot(self, *, max_namespace_bytes: int = 64 * 1024 * 1024) -> tuple[bytes, dict[str, Any]]:
+        """今の Agent Step の境界の状態を、1 つの bytes（`capx.snapshot.blob`）にする。
+
+        物理は進めない。生成コードの変数を保存できなければ `NamespaceSnapshotError`、
+        Gym が対応していなければ `GymSnapshotError` を投げ、bytes は作らない（片方だけの
+        Snapshot を作らない）。元の trial はそのまま続けられる。
+
+        Returns:
+            (bytes, 計測値 {"namespace_s", "gym_s", "pack_s"})
+        """
+        from capx.snapshot import blob, gym_state
+
+        if self._task is None:
+            raise RuntimeError("reset_for_trial の前は Snapshot を取れない")
+        executor = getattr(self._env, "_process_executor", None)
+        if executor is None:
+            raise gym_state.GymSnapshotError(
+                "Snapshot は生成コードを別プロセスで動かす worker でだけ取れる（ローカル実行は未対応）"
+            )
+
+        started = time.monotonic()
+        namespace, namespace_info = executor.snapshot(max_bytes=max_namespace_bytes)
+        namespace_done = time.monotonic()
+        state, gym_info = gym_state.capture(self._env)
+        gym_done = time.monotonic()
+
+        local = {
+            "trial": self._trial,
+            "seed": self._seed,
+            "reset_rngs": self._reset_rngs,
+            "execution_time_ns": self._execution_time_ns,
+            "last_reward": self._last_reward,
+            "last_terminated": self._last_terminated,
+            "last_truncated": self._last_truncated,
+            "last_sandbox_rc": int(self._last_info.get("sandbox_rc", -1)),
+            "last_task_completed": _optional_bool(self._last_info.get("task_completed")),
+            "steps": [
+                {
+                    "reward": s.reward,
+                    "task_completed": s.task_completed,
+                    "terminated": s.terminated,
+                    "truncated": s.truncated,
+                }
+                for s in self._steps
+            ],
+        }
+        history = [
+            {
+                "code": s.code,
+                "ok": s.ok,
+                "stdout": s.stdout,
+                "stderr": s.stderr,
+                "execution_time_s": s.execution_time_s,
+            }
+            for s in self._steps
+        ]
+        manifest = {
+            "created_at": time.time(),
+            "task_id": self._task.task_id,
+            "trial": self._trial,
+            "seed": self._seed,
+            "agent_step": len(self._steps),
+            "env_class": gym_info["env_class"],
+            "gym": gym_info,
+            "namespace": namespace_info,
+            "versions": _versions(),
+        }
+        data = blob.pack(manifest, gym={"env": state, "local_env": local}, namespace=namespace, history=history)
+        packed = time.monotonic()
+        return data, {
+            "namespace_s": round(namespace_done - started, 4),
+            "gym_s": round(gym_done - namespace_done, 4),
+            "pack_s": round(packed - gym_done, 4),
+        }
+
+    def restore(self, data: bytes) -> dict[str, Any]:
+        """Snapshot を戻す。新しい trial として reset してから、状態を上書きする。
+
+        reset は Snapshot と同じ trial 番号・seed で行い（TaskSpec とモデルが同じになる）、
+        その後 Gym・生成コードの変数・予算の記録を戻す。物理は進めない。途中で失敗したら
+        例外を投げる（呼び出し側は、この env で step させてはいけない）。
+
+        Returns:
+            Agent に渡してよい再開の情報（TaskSpec・Step 数・それまでの Step）。報酬は入れない。
+        """
+        from dataclasses import asdict
+
+        from capx.snapshot import blob, gym_state
+
+        snap = blob.unpack(data)
+        manifest = snap.manifest
+        task_id = self._task_id or type(self._env).__name__
+        if manifest.get("task_id") != task_id:
+            raise gym_state.GymSnapshotError(
+                f"Snapshot のタスク（{manifest.get('task_id')}）と、この worker のタスク（{task_id}）が違う"
+            )
+        executor = getattr(self._env, "_process_executor", None)
+        if executor is None:
+            raise gym_state.GymSnapshotError("Snapshot は生成コードを別プロセスで動かす worker でだけ戻せる")
+
+        local = snap.gym["local_env"]
+        if local.get("reset_rngs"):
+            # 元の trial と同じ乱数で reset する（同じモデルができる）。reset_for_trial が
+            # reset の直前に乱数を控え直すので、ここで戻しておけば、その値も元と同じになる。
+            self._restore_rngs = local["reset_rngs"]
+        task = self.reset_for_trial(int(local["trial"]), local["seed"])
+        gym_state.restore(self._env, snap.gym["env"], manifest.get("gym") or {})
+        # 生成コードの INPUTS には、復元した時点の観測を渡す。観測を取ると状態が変わる env が
+        # ある（nut_assembly は観測のたびに Observable の時計を進める）ので、取ったあとに
+        # もう一度戻す。元の trial はこの観測を取っていないので、取らなかった状態に揃える。
+        inputs = self._env._get_observation()
+        gym_state.restore(self._env, snap.gym["env"], manifest.get("gym") or {})
+        names = executor.restore(snap.namespace, inputs, list(self._env._api_functions()))
+
+        self._steps = [
+            RecordedStep(
+                code=h["code"],
+                ok=h["ok"],
+                stdout=h["stdout"],
+                stderr=h["stderr"],
+                execution_time_s=h["execution_time_s"],
+                reward=s["reward"],
+                task_completed=s["task_completed"],
+                terminated=s["terminated"],
+                truncated=s["truncated"],
+            )
+            for h, s in zip(snap.history, local["steps"], strict=True)
+        ]
+        self._execution_time_ns = int(local["execution_time_ns"])
+        self._last_reward = float(local["last_reward"])
+        self._last_terminated = bool(local["last_terminated"])
+        self._last_truncated = bool(local["last_truncated"])
+        self._last_info = {
+            "sandbox_rc": int(local["last_sandbox_rc"]),
+            "stdout": self._steps[-1].stdout if self._steps else "",
+            "stderr": self._steps[-1].stderr if self._steps else "",
+            "task_completed": local["last_task_completed"],
+        }
+        # 録画は復元した時点から録り直す（reset で録った 1 枚目は、上書き前の状態なので捨てる）
+        if self._record_video and hasattr(self._env, "enable_video_capture"):
+            self._env.enable_video_capture(True, clear=True, wrist_camera=self._wrist_camera)
+
+        return {
+            "task": asdict(task),
+            "trial": self._trial,
+            "seed": self._seed,
+            "agent_step": len(self._steps),
+            "history": snap.history,
+            "namespace_names": names,
+            "namespace_excluded": manifest.get("namespace", {}).get("excluded", []),
+            "execution_time_used_s": self._execution_time_ns / 1e9,
+            "max_steps": self._budget.max_steps,
+        }
+
+    def _capture_rngs(self) -> dict[str, Any] | None:
+        """reset の直前の乱数を控える。復元で渡された乱数があれば、先にそれに戻す。"""
+        try:
+            from capx.snapshot import gym_state
+        except ImportError:
+            return None
+        pending, self._restore_rngs = self._restore_rngs, None
+        try:
+            if pending is not None:
+                gym_state.restore_rngs(self._env, pending)
+            return gym_state.capture_rngs(self._env)
+        except gym_state.GymSnapshotError:
+            return None  # Snapshot に対応していない env（実機など）
 
     def evaluate(self) -> TrialOutcome:
         """採点する。**Bench だけが呼ぶ。** Agent には見せない。
@@ -329,6 +513,20 @@ class LocalAgentEnv:
             if written == 0:
                 return None
             return path.read_bytes()
+
+
+def _versions() -> dict[str, str]:
+    """Snapshot に残す版。復元できなかったときの手がかり（一致は求めない）。"""
+    import importlib.metadata
+    import platform
+
+    out = {"python": platform.python_version()}
+    for name in ("mujoco", "robosuite", "libero", "cloudpickle", "numpy"):
+        try:
+            out[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return out
 
 
 def _optional_bool(value: Any) -> bool | None:

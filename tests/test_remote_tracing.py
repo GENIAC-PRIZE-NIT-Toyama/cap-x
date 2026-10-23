@@ -83,7 +83,7 @@ def client(monkeypatch):
         lf.flush()
         return {s.name: s for s in exporter.get_finished_spans()}
 
-    return SimpleNamespace(lf=lf, spans=spans, scores=scores)
+    return SimpleNamespace(lf=lf, spans=spans, scores=scores, exporter=exporter)
 
 
 def test_without_keys_nothing_is_wrapped(monkeypatch) -> None:
@@ -224,3 +224,137 @@ def test_non_ascii_tags_are_kept(client) -> None:
     with _start(client, tags=["suite:持ち上げ"]):
         pass
     assert "suite:____" in client.spans()["cube_stack"].attributes["langfuse.trace.tags"]
+
+
+# -- Snapshot / Fork -------------------------------------------------------------
+
+
+class SnapshotEnv(FakeEnv):
+    """Snapshot を有効にした `RemoteAgentEnv` の代わり。"""
+
+    def __init__(self, resume_from=None, resume_info=None) -> None:
+        super().__init__()
+        self.snapshot_enabled = True
+        self.snapshot_context: dict = {}
+        self.resume_from = resume_from
+        self.resume_info = resume_info
+        self.initial_snapshot_id = None
+        self.last_snapshot_id = resume_from
+        self.last_snapshot_error = None
+        self.agent_step = (resume_info or {}).get("agent_step", 0)
+        self.task = TaskSpec(task_id="cube_stack", seed=1, instruction="Goal: stack.", api_docs="d")
+        self.contexts: list[dict] = []
+
+    def reset_for_trial(self, trial, seed=None):
+        self.contexts.append(dict(self.snapshot_context))
+        self.initial_snapshot_id = self.last_snapshot_id = "snap_init"
+        return super().reset_for_trial(trial, seed)
+
+    def step(self, code, *, capture_video=False):
+        self.contexts.append(dict(self.snapshot_context))
+        self.agent_step += 1
+        if code == "unpicklable":
+            self.last_snapshot_error = "gen（generator）は保存できない"
+            return StepResult(request_id="r", ok=True, stdout="", stderr="")
+        result = StepResult(request_id="r", ok=True, stdout="", stderr="", snapshot_id=f"snap_{self.agent_step}")
+        self.last_snapshot_id = result.snapshot_id
+        return result
+
+
+def _meta(span) -> dict:
+    return {
+        key.removeprefix("langfuse.observation.metadata."): value
+        for key, value in span.attributes.items()
+        if key.startswith("langfuse.observation.metadata.")
+    }
+
+
+def test_steps_carry_snapshot_ids(client) -> None:
+    env_inner = SnapshotEnv()
+    with _start(client) as trace:
+        env = trace.wrap(env_inner)
+        env.reset_for_trial(1, 7)
+        env.step("print(1)")
+        env.step("print(2)")
+        env.step("unpicklable")
+    spans = [s for s in _all_spans(client) if s.name == "env.step"]
+    metas = [_meta(s) for s in spans]
+    assert [(m["agent_step"], m["snapshot_before"], m["snapshot_after"]) for m in metas[:2]] == [
+        (1, "snap_init", "snap_1"),
+        (2, "snap_1", "snap_2"),
+    ]
+    assert "generator" in metas[2]["snapshot_error"] and metas[2]["snapshot_before"] == "snap_2"
+    root = next(s for s in _all_spans(client) if s.name == "cube_stack")
+    assert json.loads(root.attributes["langfuse.observation.input"])["initial_snapshot_id"] == "snap_init"
+    # Snapshot の記録に、その env.step の trace と observation を残す
+    assert env_inner.contexts[1]["observation_id"] == format(spans[0].context.span_id, "016x")
+    assert env_inner.contexts[1]["trace_id"] == format(spans[0].context.trace_id, "032x")
+
+
+def test_fork_is_a_new_trace_linked_to_the_parent(client) -> None:
+    resumed = SnapshotEnv(
+        resume_from="snap_2",
+        resume_info={"agent_step": 2, "meta": {"trace_id": "parenttrace", "observation_id": "parentobs"}},
+    )
+    with tracing.fork_trace(
+        session="m/cube_stack/fork", task="cube_stack", snapshot_id="snap_2", fork_type="human_edit",
+        model="m", agent_path=__file__,
+    ) as trace:
+        env = trace.wrap(resumed)
+        env.step("fixed()")
+        trace.finish(_summary())
+    root = next(s for s in _all_spans(client) if s.name == "cube_stack")
+    data = json.loads(root.attributes["langfuse.observation.input"])
+    assert data["resume_from"] == "snap_2" and data["agent_step"] == 2
+    assert data["parent_trace_id"] == "parenttrace" and data["parent_observation_id"] == "parentobs"
+    assert data["fork_type"] == "human_edit"
+    tags = root.attributes["langfuse.trace.tags"]
+    assert "fork" in tags and "fork:human_edit" in tags
+    assert root.attributes["langfuse.trace.metadata.fork_snapshot_id"] == "snap_2"
+    step = next(s for s in _all_spans(client) if s.name == "env.step")
+    assert _meta(step)["snapshot_before"] == "snap_2" and _meta(step)["agent_step"] == 3
+    assert {s["name"] for s in client.scores} >= {"reward", "exec_ok"}
+
+
+def _all_spans(client):
+    client.lf.flush()
+    return list(client.exporter.get_finished_spans())
+
+
+def test_load_conversation_takes_the_last_generation_before_the_step(monkeypatch) -> None:
+    """Langfuse の Trace から、その env.step より前の最後の LLM 呼び出しの入出力を取り出す。"""
+    import datetime as dt
+
+    import forking
+
+    t = dt.datetime(2026, 10, 23, tzinfo=dt.timezone.utc)
+    obs = lambda id_, type_, sec, **kw: SimpleNamespace(id=id_, type=type_, start_time=t + dt.timedelta(seconds=sec), **kw)  # noqa: E731
+    image = {"type": "image_url", "image_url": {"url": "@@@langfuseMedia:type=image/jpeg|id=x@@@"}}
+    trace = SimpleNamespace(
+        observations=[
+            obs("g1", "GENERATION", 1, input=[{"role": "user", "content": "first"}], output={"role": "assistant", "content": "a1"}),
+            obs("s1", "TOOL", 2),
+            obs(
+                "g2", "GENERATION", 3,
+                input=[
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": [{"type": "text", "text": "結果\n（今の様子をカメラで撮った画像を添えます）"}, image]},
+                ],
+                output={"role": "assistant", "content": "```python\nx = 1\n```"},
+            ),
+            obs("s2", "TOOL", 4),
+            obs("g3", "GENERATION", 5, input=[], output="later"),
+        ]
+    )
+    fake = SimpleNamespace(api=SimpleNamespace(trace=SimpleNamespace(get=lambda trace_id: trace)))
+    monkeypatch.setattr("langfuse.get_client", lambda: fake)
+
+    messages = forking.load_conversation("t", "s2")
+    assert messages == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "結果\n" + forking.IMAGE_DROPPED},
+        {"role": "assistant", "content": "```python\nx = 1\n```"},
+    ]
+    assert forking.load_conversation("t", "s1")[-1] == {"role": "assistant", "content": "a1"}
+    with pytest.raises(LookupError):
+        forking.load_conversation("t", "missing")

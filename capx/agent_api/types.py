@@ -115,6 +115,9 @@ class StepResult:
         execution_time_remaining_s: 残り。Agent はこれを見て戦略を変えられる。
         video: ``capture_video=True`` のときだけ入る。mp4 の bytes。
         video_media_type: ``"video/mp4"`` など。形式を推測させない。
+        snapshot_id: この Step が終わった時点の Snapshot ID。Snapshot を有効にした
+            ``RemoteAgentEnv`` でだけ入る（保存に失敗したら None。理由は
+            ``env.last_snapshot_error``）。報酬は含まない。
     """
 
     request_id: str
@@ -128,6 +131,7 @@ class StepResult:
     sim_steps_used: int = 0
     video: bytes | None = None
     video_media_type: str | None = None
+    snapshot_id: str | None = None
 
 
 @dataclass

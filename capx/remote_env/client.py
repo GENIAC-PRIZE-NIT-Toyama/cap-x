@@ -5,11 +5,19 @@
 
 backend は経路に入らない。セッションを作るのは HTTP だが、コードと画像と
 動画はここから worker へ直接 ZMQ で流れる。
+
+**Snapshot。** `snapshot_enabled=True`（または環境変数 `CAPX_SNAPSHOT_ENABLED=true`）なら、
+reset の直後と毎 step の後に、worker が状態を保存し、backend がそれを保存先に置いて
+Snapshot ID を返す。ID は `StepResult.snapshot_id` と `initial_snapshot_id` に入る。
+`resume_from=<ID>` で作ると、backend が新しい worker にその状態を戻してから繋ぐ。
+`reset_for_trial()` を呼ばずに、そのまま `step()` できる。Snapshot の中身（bytes）は
+この PC を通らない。
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -35,6 +43,29 @@ HEARTBEAT_INTERVAL_S = 15.0
 #: heartbeat が続けて失敗してよい回数。
 HEARTBEAT_FAILURES_ALLOWED = 3
 
+#: Snapshot の保存を有効にする環境変数（`.env` に書ける）。コンストラクタの引数が優先。
+SNAPSHOT_ENV = "CAPX_SNAPSHOT_ENABLED"
+
+#: backend に Snapshot を保存させるのを待つ上限（worker からの取り出しと MinIO への書き込み）。
+SNAPSHOT_SAVE_TIMEOUT_S = 300.0
+
+#: Snapshot からの再開を含むセッション作成を待つ上限（環境の構築 + 復元）。
+RESUME_TIMEOUT_S = 1200.0
+
+
+class SnapshotError(RuntimeError):
+    """Snapshot から再開できなかった（無い・他人のもの・壊れている・タスクが違う・復元に失敗）。
+
+    再開できなかった env は作られない（中途半端な状態で step させない）。
+    """
+
+
+def snapshot_enabled_from_env(explicit: bool | None) -> bool:
+    """引数があればそれ、無ければ `CAPX_SNAPSHOT_ENABLED`、それも無ければ off。"""
+    if explicit is not None:
+        return bool(explicit)
+    return os.environ.get(SNAPSHOT_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
 
 class RemoteAgentEnv:
     """ZMQ `DEALER` で worker の `LocalAgentEnv` を呼ぶ。"""
@@ -51,6 +82,8 @@ class RemoteAgentEnv:
         timeout_s: float = DEFAULT_TIMEOUT_S,
         curve_server_key: bytes | None = None,
         curve_keypair: tuple[bytes, bytes] | None = None,
+        snapshot_enabled: bool | None = None,
+        resume_from: str | None = None,
     ) -> None:
         """
         Args:
@@ -63,6 +96,12 @@ class RemoteAgentEnv:
                 （mp4）を受け取って控える。Agent に見える `StepResult.video` も入る。
             curve_server_key: worker の公開鍵。渡すと CURVE で繋ぐ。
             curve_keypair: 自分の (公開鍵, 秘密鍵)。秘密鍵はこの PC から出ない。
+            snapshot_enabled: reset の直後と毎 step の後に Snapshot を保存する。省略すると
+                環境変数 `CAPX_SNAPSHOT_ENABLED`（`true` / `1`）、それも無ければ off。
+                `server_url` が要る。
+            resume_from: この Snapshot ID から再開する。backend が新しい worker を起こして
+                状態を戻す。`reset_for_trial()` は呼ばなくてよい（`task` に TaskSpec が入る）。
+                戻せなければ `SnapshotError`（env は作られない）。
         """
         self._budget = budget or Budget()
         self._timeout_s = timeout_s
@@ -78,6 +117,31 @@ class RemoteAgentEnv:
         self._images: list[bytes] = []
         self._frame_handler: Callable[[int, bytes], None] | None = None
 
+        # -- Snapshot
+        if snapshot_enabled and not server_url:
+            raise ValueError("snapshot_enabled には server_url が要る（Snapshot は backend が保存する）")
+        if resume_from and not server_url:
+            raise ValueError("resume_from には server_url と task_id が要る")
+        #: Snapshot を保存するか。環境変数だけで on になっていて backend を使わないときは off。
+        self.snapshot_enabled = bool(server_url) and snapshot_enabled_from_env(snapshot_enabled)
+        #: 再開に使った Snapshot ID（再開でなければ None）。
+        self.resume_from = resume_from
+        #: 再開の情報（`agent_step` / `history` / `meta` など）。報酬は入らない。
+        self.resume_info: dict[str, Any] | None = None
+        #: reset 直後の Snapshot ID。
+        self.initial_snapshot_id: str | None = None
+        #: いちばん新しい Snapshot ID（再開した直後は `resume_from`）。
+        self.last_snapshot_id: str | None = None
+        #: 直前の Snapshot の保存に失敗した理由（成功したら None）。
+        self.last_snapshot_error: str | None = None
+        #: 保存の計測値（worker での作成・取り出し・MinIO への書き込み）。Snapshot ごとに 1 つ。
+        self.snapshot_timings: list[dict[str, Any]] = []
+        #: 次の Snapshot に添える情報（Trace の id など。`remote/tracing.py` が入れる）。
+        self.snapshot_context: dict[str, Any] = {}
+        self._agent_state: Any = None
+        # 再開したとき、それまでに済んでいた Step 数。`agent_step` はこれに足していく。
+        self._step_base = 0
+
         if server_url:
             if not task_id:
                 raise ValueError("server_url を使うときは task_id が要る")
@@ -87,9 +151,11 @@ class RemoteAgentEnv:
 
             self._curve_keypair = zmq.curve_keypair()
             self._server_url = server_url
-            endpoint, self._session_id, self._curve_server_key = _create_session(
-                server_url, task_id, self._curve_keypair[0]
+            endpoint, self._session_id, self._curve_server_key, resume = _create_session(
+                server_url, task_id, self._curve_keypair[0], resume_from=resume_from
             )
+            if resume_from:
+                self._apply_resume(resume, resume_from)
 
         if not endpoint:
             raise ValueError("endpoint か server_url のどちらかが要る")
@@ -102,10 +168,11 @@ class RemoteAgentEnv:
         if len(code.encode("utf-8")) > self._budget.max_code_bytes:
             raise BudgetExceeded("output_limit", "コードが上限を超えた")
 
+        extra = {"snapshot": True} if self.snapshot_enabled else {}
         payload = self._call(
-            "step", code=code, capture_video=capture_video or self._record_video
+            "step", code=code, capture_video=capture_video or self._record_video, **extra
         )
-        result = StepResult(**payload["result"])
+        result = StepResult(**_known_fields(payload["result"]))
 
         # Bench は Agent の自己申告ではなく、`step()` を通ったものを記録する。
         # Remote では worker ではなくここが手元側の Bench なので、ここで控える。
@@ -122,6 +189,8 @@ class RemoteAgentEnv:
                 video=result.video if self._record_video else None,
             )
         )
+        if self.snapshot_enabled:
+            result.snapshot_id = self._steps[-1].snapshot_id = self._save_snapshot(payload)
         return result
 
     def render(self, camera: str = "main") -> bytes:
@@ -206,11 +275,98 @@ class RemoteAgentEnv:
     # -- Bench 専用 --------------------------------------------------------
 
     def reset_for_trial(self, trial: int, seed: int | None = None) -> TaskSpec:
-        payload = self._call("reset", trial=trial, seed=seed)
+        extra = {"snapshot": True} if self.snapshot_enabled else {}
+        payload = self._call("reset", trial=trial, seed=seed, **extra)
         self._steps.clear()
         self._images.clear()
-        self._task = TaskSpec(**payload["task"])
+        self._step_base = 0
+        self._task = TaskSpec(**_task_fields(payload["task"]))
+        if self.snapshot_enabled:
+            self.initial_snapshot_id = self._save_snapshot(payload)
         return self._task
+
+    # -- Snapshot -----------------------------------------------------------
+
+    @property
+    def task(self) -> TaskSpec | None:
+        """今の TaskSpec。再開した env では、`reset_for_trial()` を呼ばなくても入っている。"""
+        return self._task
+
+    @property
+    def agent_step(self) -> int:
+        """これまでに済んだ Step の数。再開した env では、再開前の Step も数える。"""
+        return self._step_base + len(self._steps)
+
+    @property
+    def history(self) -> list[dict[str, Any]]:
+        """再開前の Step（code / ok / stdout / stderr）。再開した env でだけ入る。"""
+        return list((self.resume_info or {}).get("history") or [])
+
+    def set_agent_state(self, state: Any) -> None:
+        """次からの Snapshot に、Agent の状態（JSON にできるもの、64KB まで）を添える。
+
+        LLM の会話以外に、Agent が持っている状態（方針・カウンタなど）を、再開時に
+        `resume_info["meta"]["agent_state"]` で受け取れるようにする。
+        """
+        self._agent_state = state
+
+    def _apply_resume(self, resume: dict[str, Any] | None, snapshot_id: str) -> None:
+        if not resume or "task" not in resume:
+            raise SnapshotError(f"Snapshot {snapshot_id} からの再開の情報が backend から返らなかった")
+        self.resume_info = resume
+        self._task = TaskSpec(**_task_fields(resume["task"]))
+        self._step_base = int(resume.get("agent_step") or 0)
+        self.last_snapshot_id = snapshot_id
+
+    def _save_snapshot(self, payload: dict[str, Any]) -> str | None:
+        """worker が作った Snapshot を backend に保存させ、ID を返す。失敗なら None。
+
+        失敗しても例外にしない（trial は続ける）。理由は `last_snapshot_error` に入れ、警告を出す。
+        """
+        info = payload.get("snapshot")
+        if not info:
+            return self._snapshot_failed(payload.get("snapshot_error") or "worker が Snapshot を作らなかった")
+        meta = {**self.snapshot_context, "agent_step": self.agent_step}
+        if self.resume_from:
+            meta.setdefault("fork_of", self.resume_from)
+        if self._agent_state is not None:
+            meta["agent_state"] = self._agent_state
+        try:
+            import requests
+
+            started = time.monotonic()
+            response = requests.post(
+                f"{self._server_url.rstrip('/')}/sessions/{self._session_id}/snapshots",
+                json={"token": info["token"], "meta": meta},
+                headers=_auth_headers(),
+                timeout=SNAPSHOT_SAVE_TIMEOUT_S,
+            )
+            elapsed = time.monotonic() - started
+        except Exception as exc:
+            return self._snapshot_failed(f"backend に保存を頼めなかった: {type(exc).__name__}: {exc}")
+        if response.status_code >= 400:
+            return self._snapshot_failed(f"backend が保存できなかった（{response.status_code}）: {_detail(response)}")
+        record = response.json()
+        snapshot_id = record["snapshot_id"]
+        self.snapshot_timings.append(
+            {
+                "snapshot_id": snapshot_id,
+                "agent_step": self.agent_step,
+                "bytes": info.get("bytes"),
+                "worker_s": info.get("seconds"),
+                "worker_timing": info.get("timing"),
+                "save_s": round(elapsed, 4),
+                "backend_timing": record.get("timing"),
+            }
+        )
+        self.last_snapshot_id = snapshot_id
+        self.last_snapshot_error = None
+        return snapshot_id
+
+    def _snapshot_failed(self, reason: str) -> None:
+        self.last_snapshot_error = reason
+        print(f"[snapshot] 保存できなかった（trial は続ける）: {reason}")
+        return None
 
     def evaluate(self):
         """採点を worker から取る。**クライアントは値を送らない。**
@@ -379,35 +535,68 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _known_fields(result: dict[str, Any]) -> dict[str, Any]:
+    """`StepResult` が知っている項目だけ。新しい worker が項目を足しても壊れない。"""
+    from dataclasses import fields
+
+    names = {f.name for f in fields(StepResult)}
+    return {k: v for k, v in result.items() if k in names}
+
+
+def _task_fields(task: dict[str, Any]) -> dict[str, Any]:
+    from dataclasses import fields
+
+    names = {f.name for f in fields(TaskSpec)}
+    out = {k: v for k, v in task.items() if k in names}
+    if isinstance(out.get("cameras"), list):
+        out["cameras"] = tuple(out["cameras"])
+    return out
+
+
+def _detail(response: Any) -> str:
+    try:
+        return str(response.json().get("detail", response.text))
+    except Exception:
+        return response.text
+
+
 def _create_session(
-    server_url: str, task_id: str, client_public_key: bytes
-) -> tuple[str, str, bytes]:
-    """backend にセッションを作らせる。
+    server_url: str, task_id: str, client_public_key: bytes, *, resume_from: str | None = None
+) -> tuple[str, str, bytes, dict[str, Any] | None]:
+    """backend にセッションを作らせる。`resume_from` なら Snapshot を戻した worker。
 
     Returns:
-        (zmq_endpoint, session_id, worker の公開鍵)
+        (zmq_endpoint, session_id, worker の公開鍵, 再開の情報)
     """
     import requests
 
+    body: dict[str, Any] = {
+        "task_id": task_id,
+        "client_public_key": client_public_key.decode("ascii"),
+    }
+    if resume_from:
+        body["resume_from"] = resume_from
     response = requests.post(
         f"{server_url.rstrip('/')}/sessions",
-        json={
-            "task_id": task_id,
-            "client_public_key": client_public_key.decode("ascii"),
-        },
+        json=body,
         headers=_auth_headers(),
-        timeout=600,  # worker の環境構築を待つ
+        # worker の環境構築を待つ。再開では、さらに Snapshot の読み込みと復元を待つ
+        timeout=RESUME_TIMEOUT_S if resume_from else 600,
     )
     if response.status_code >= 400:
-        try:
-            detail = response.json().get("detail", response.text)
-        except Exception:
-            detail = response.text
+        detail = _detail(response)
         from capx.agent_api import CapacityFull, EnvStartFailed
 
         message = f"セッションを作れなかった（{response.status_code}）: {detail}"
         if response.status_code == 429:
             raise CapacityFull(message)
+        if resume_from and response.status_code in (400, 404, 422, 500, 502, 503):
+            raise SnapshotError(f"Snapshot {resume_from} から再開できなかった（{response.status_code}）: {detail}")
         raise EnvStartFailed(message, status_code=response.status_code)
     data = response.json()
-    return data["zmq_endpoint"], data["session_id"], data["server_public_key"].encode("ascii")
+    return (
+        data["zmq_endpoint"],
+        data["session_id"],
+        data["server_public_key"].encode("ascii"),
+        data.get("resume"),
+    )

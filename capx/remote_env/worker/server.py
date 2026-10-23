@@ -10,6 +10,13 @@ backend が「無応答」と判断して実行中のコンテナを kill して
 
 `ROUTER` ソケットは I/O スレッドだけが触る（ZMQ のソケットはスレッドを
 またげない）。実行は別スレッドに渡し、結果をキュー経由で受け取る。
+
+**Snapshot。** `reset` / `step` に `snapshot: true` が付いていたら、終わった直後（次の
+要求を受ける前）に状態を 1 つの bytes にして手元に置き、取り出し用の token を返す。
+bytes を取り出す（`snapshot_fetch`）のと、Snapshot から戻す（`restore`）のは backend
+だけができる（backend の公開鍵で繋いだ接続だけ）。クライアントは Snapshot の中身
+（採点の記録を含む）を読めず、自分で作った bytes を戻させることもできない。
+`--resume` で起動した worker は、`restore` が成功するまで step などを受け付けない。
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ import os
 import queue
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -34,6 +42,20 @@ POLL_MS = 100
 #: 再送に備えて覚えておく応答の数。
 DONE_CACHE_SIZE = 16
 
+#: backend が取り出すまで手元に置く Snapshot の数。古いものから捨てる。クライアントは
+#: Step のたびにすぐ backend に保存を頼むので、ふつうは 1 つしか溜まらない。
+PENDING_SNAPSHOTS = 2
+
+#: backend だけが呼べる操作。
+BACKEND_OPERATIONS = frozenset({"snapshot_fetch", "restore"})
+
+#: `--resume` の worker が、復元が済むまで受け付けない操作。
+NEEDS_STATE = frozenset({"step", "render", "reset", "evaluate"})
+
+#: 新しいクライアントだけが知る `StepResult` の項目。worker の側では常に空なので送らない
+#: （古いクライアントは知らない項目があると `StepResult(**result)` で失敗する）。
+_CLIENT_SIDE_FIELDS = ("snapshot_id",)
+
 
 @dataclass
 class _Job:
@@ -48,9 +70,25 @@ class WorkerServer:
     シミュレータを 2 つの要求が同時に進めると、どちらの結果も信用できない。
     """
 
-    def __init__(self, env: Any, session_id: str = "") -> None:
+    def __init__(
+        self,
+        env: Any,
+        session_id: str = "",
+        *,
+        backend_key: bytes | None = None,
+        restore_pending: bool = False,
+        snapshot_max_bytes: int = 64 * 1024 * 1024,
+    ) -> None:
         self._env = env
         self._session_id = session_id
+        # backend の公開鍵（Z85）。Snapshot の取り出しと復元はこの鍵の接続だけに許す。
+        self._backend_key = backend_key
+        self._curve = False
+        # `--resume` で起動したら、restore が成功するまで env を使わせない
+        self._restore_pending = restore_pending
+        self._snapshot_max_bytes = snapshot_max_bytes
+        self._pending: OrderedDict[str, bytes] = OrderedDict()
+        self._pending_lock = threading.Lock()
         self._last_activity = time.monotonic()
         self._jobs: queue.Queue[_Job] = queue.Queue()
         self._results: queue.Queue[tuple[bytes, Any]] = queue.Queue()
@@ -100,8 +138,13 @@ class WorkerServer:
         if msg.operation == "step":
             code = msg.payload.get("code", "")
             capture = bool(msg.payload.get("capture_video", False))
-            result = self._env.step(code, capture_video=capture)
-            return {"result": asdict(result)}
+            result = asdict(self._env.step(code, capture_video=capture))
+            for key in _CLIENT_SIDE_FIELDS:
+                result.pop(key, None)
+            payload: dict[str, Any] = {"result": result}
+            if msg.payload.get("snapshot"):
+                payload.update(self._take_snapshot())
+            return payload
 
         if msg.operation == "render":
             camera = msg.payload.get("camera", "main")
@@ -110,7 +153,17 @@ class WorkerServer:
         if msg.operation == "reset":
             trial = int(msg.payload.get("trial", 1))
             task = self._env.reset_for_trial(trial, msg.payload.get("seed"))
-            return {"task": asdict(task)}
+            payload = {"task": asdict(task)}
+            if msg.payload.get("snapshot"):
+                payload.update(self._take_snapshot())
+            return payload
+
+        if msg.operation == "restore":
+            started = time.monotonic()
+            info = self._env.restore(bytes(msg.payload["data"]))
+            self._restore_pending = False
+            logger.info("Snapshot から復元した（%.2fs）", time.monotonic() - started)
+            return {"resume": info, "restore_s": round(time.monotonic() - started, 4)}
 
         if msg.operation == "evaluate":
             outcome = self._env.evaluate()
@@ -123,6 +176,55 @@ class WorkerServer:
             }
 
         raise ValueError(f"unknown operation: {msg.operation}")
+
+    # -- Snapshot ------------------------------------------------------------
+
+    def _take_snapshot(self) -> dict[str, Any]:
+        """今の状態を bytes にして手元に置き、取り出し用の token を返す。
+
+        失敗しても step は失敗にしない。理由を `snapshot_error` で返す（元の trial は続く）。
+        """
+        from capx.snapshot.blob import sha256
+
+        started = time.monotonic()
+        try:
+            data, timing = self._env.snapshot(max_namespace_bytes=self._snapshot_max_bytes)
+        except Exception as exc:
+            logger.warning("Snapshot を取れなかった: %s", exc)
+            return {"snapshot_error": _snapshot_error_text(exc)}
+        if len(data) > self._snapshot_max_bytes:
+            return {
+                "snapshot_error": f"Snapshot が上限より大きい（{len(data) / 1e6:.1f}MB > "
+                f"{self._snapshot_max_bytes / 1e6:.0f}MB）。生成コードの大きな変数を del する"
+            }
+        token = uuid.uuid4().hex
+        with self._pending_lock:
+            self._pending[token] = data
+            while len(self._pending) > PENDING_SNAPSHOTS:
+                self._pending.popitem(last=False)
+        return {
+            "snapshot": {
+                "token": token,
+                "bytes": len(data),
+                "sha256": sha256(data),
+                "seconds": round(time.monotonic() - started, 4),
+                "timing": timing,
+            }
+        }
+
+    def _fetch_snapshot(self, msg: Any) -> Any:
+        from capx.remote_env import protocol
+
+        with self._pending_lock:
+            data = self._pending.pop(str(msg.payload.get("token", "")), None)
+        if data is None:
+            return protocol.error(msg, "その Snapshot は無い（取り出し済みか、古くて捨てた）")
+        return protocol.response(msg, data=data)
+
+    def _is_backend(self, user_id: str | None) -> bool:
+        if not self._curve:
+            return True  # 開発用（鍵なし）。ポートを開けるときは必ず CURVE を使う
+        return self._backend_key is not None and user_id == self._backend_key.decode("ascii")
 
     # -- ストリーミング ----------------------------------------------------
 
@@ -213,6 +315,7 @@ class WorkerServer:
             )
             socket.curve_server = True
             socket.curve_secretkey = curve_secret_key
+            self._curve = True
             logger.info("CURVE on: %d client key(s) allowed", len(allowed))
         else:
             logger.warning("CURVE OFF — 開発用。ポートを開けるときは鍵を渡す")
@@ -250,7 +353,8 @@ class WorkerServer:
                 if not poller.poll(POLL_MS):
                     continue
 
-                identity, raw = socket.recv_multipart()
+                identity_frame, frame = socket.recv_multipart(copy=False)
+                identity, raw = identity_frame.bytes, frame.bytes
                 try:
                     msg = protocol.decode(raw)
                 except protocol.ProtocolError as exc:
@@ -259,7 +363,7 @@ class WorkerServer:
                     )
                     continue
 
-                reply = self._dispatch(msg, identity)
+                reply = self._dispatch(msg, identity, _user_id(frame))
                 if reply is not None:
                     socket.send_multipart([identity, protocol.encode(reply)])
         finally:
@@ -268,7 +372,7 @@ class WorkerServer:
             if authenticator is not None:
                 authenticator.stop()
 
-    def _dispatch(self, msg: Any, identity: bytes) -> Any:
+    def _dispatch(self, msg: Any, identity: bytes, user_id: str | None = None) -> Any:
         """I/O スレッドで即答できるものは返し、重いものはキューへ。
 
         Returns:
@@ -294,6 +398,17 @@ class WorkerServer:
         if msg.operation == "unsubscribe":
             self._subscribers.discard(identity)
             return protocol.response(msg, subscribed=False)
+
+        if msg.operation in BACKEND_OPERATIONS and not self._is_backend(user_id):
+            return protocol.error(msg, f"{msg.operation} は backend だけが呼べる")
+        if msg.operation == "snapshot_fetch":
+            return self._fetch_snapshot(msg)
+        if self._restore_pending and msg.operation in NEEDS_STATE:
+            return protocol.error(
+                msg,
+                "この worker は Snapshot からの復元が済んでいない（復元に失敗した）。使えない",
+                kind="infrastructure",
+            )
 
         if msg.operation == "close":
             self._subscribers.discard(identity)
@@ -338,6 +453,23 @@ def apply_overrides(config: Any, overrides: tuple[str, ...] | list[str]) -> None
         node[last] = yaml.safe_load(raw)
 
 
+def _user_id(frame: Any) -> str | None:
+    """CURVE で認証した接続の公開鍵（Z85）。CURVE でなければ None。"""
+    try:
+        return frame.get("User-Id")
+    except Exception:
+        return None
+
+
+def _snapshot_error_text(exc: Exception) -> str:
+    from capx.snapshot.gym_state import GymSnapshotError
+    from capx.snapshot.namespace import NamespaceSnapshotError
+
+    if isinstance(exc, (GymSnapshotError, NamespaceSnapshotError)):
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}"
+
+
 def _encode_jpeg(frame: Any, quality: int) -> bytes:
     import io
 
@@ -372,6 +504,8 @@ def main(
     isolate_policy: bool = True,
     task_id: str = "",
     override: tuple[str, ...] = (),
+    resume: bool = False,
+    snapshot_max_mb: int = 64,
 ) -> None:
     """worker を起動する。環境を作り終えてから listen する。
 
@@ -383,6 +517,9 @@ def main(
         task_id: 許可リスト上のタスク名。省略すると config のファイル名。
         override: config への上書き `env.cfg.low_level.task_id=3` の形。backend が
             許可リストの値を渡す（LIBERO は 1 本の設定を suite と番号だけ変えて使う）。
+        resume: Snapshot から再開する worker。backend の `restore` が成功するまで、
+            step などを受け付けない。
+        snapshot_max_mb: 1 つの Snapshot の上限（MB）。
     """
     from capx.agent_api import Budget
     from capx.envs.configs.instantiate import instantiate
@@ -426,8 +563,15 @@ def main(
 
     secret = os.environ.get("CAPX_CURVE_SERVER_SECRET")
     allowed = os.environ.get("CAPX_CURVE_ALLOWED_CLIENT_KEYS", "")
+    backend_key = os.environ.get("CAPX_BACKEND_PUBLIC_KEY", "").strip()
     # 秘密鍵は引数ではなく環境変数で受ける（`ps` に出さないため）
-    WorkerServer(env, session_id=session_id).serve(
+    WorkerServer(
+        env,
+        session_id=session_id,
+        backend_key=backend_key.encode() if backend_key else None,
+        restore_pending=resume,
+        snapshot_max_bytes=snapshot_max_mb * 1024 * 1024,
+    ).serve(
         port=port,
         host=host,
         curve_secret_key=secret.encode() if secret else None,
