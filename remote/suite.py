@@ -67,7 +67,7 @@ DEFAULT_MAX_STEPS = Budget().max_steps
 MAX_STEPS_LIMIT = 20
 
 #: 同時に回すタスクの数（`--parallel`）の上限。GPU マシンの枠は全員で共有する。
-MAX_PARALLEL = 4
+MAX_PARALLEL = 10
 #: `--parallel` が 2 以上のとき、ほかの人のために空けておくセッションの枠の数。
 RESERVED_SLOTS = 2
 #: GPU マシンが空くのを待つとき、見直す間隔と、諦めるまでの時間（秒）。
@@ -543,7 +543,7 @@ def main(
         output_dir: 結果を置く場所。省略すると `remote/outputs/`。その下の
             `<モデル名>/suite_<名前>/<日時>/` に、タスクごと・試行ごとのフォルダを作る。
         record_video: `--no-record-video` で動画を保存しない。
-        parallel: 同時に回すタスクの数（1〜4）。GPU マシンの空きを見て、混んでいれば待つ。
+        parallel: 同時に回すタスクの数（1〜10）。GPU マシンの空きを見て、混んでいれば待つ。
             並べると GPU・LLM サーバを取り合うので、実行時間は 1 本ずつより長くなる。
         trace: `--no-trace` で Langfuse に送らない。キー（LANGFUSE_PUBLIC_KEY /
             LANGFUSE_SECRET_KEY）が無ければ、付けなくても送らない。
