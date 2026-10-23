@@ -18,7 +18,7 @@ class FakeEnv:
         pass
 
     def set_init_state(self, state):  # noqa: D401, ARG002
-        pass
+        return {"image": None}
 
     def step(self, action):  # noqa: D401, ARG002
         self._t += 1
