@@ -328,10 +328,17 @@ def test_load_conversation_takes_the_last_generation_before_the_step(monkeypatch
     import forking
 
     t = dt.datetime(2026, 10, 23, tzinfo=dt.timezone.utc)
-    obs = lambda id_, type_, sec, **kw: SimpleNamespace(id=id_, type=type_, start_time=t + dt.timedelta(seconds=sec), **kw)  # noqa: E731
+
+    def obs(id_, type_, sec, input=None, output=None):
+        # Langfuse v4 の observations API は input / output を JSON の文字列で返す
+        return SimpleNamespace(
+            id=id_, type=type_, start_time=t + dt.timedelta(seconds=sec),
+            input=json.dumps(input, ensure_ascii=False), output=json.dumps(output, ensure_ascii=False),
+        )
+
     image = {"type": "image_url", "image_url": {"url": "@@@langfuseMedia:type=image/jpeg|id=x@@@"}}
-    trace = SimpleNamespace(
-        observations=[
+    observations = SimpleNamespace(
+        data=[
             obs("g1", "GENERATION", 1, input=[{"role": "user", "content": "first"}], output={"role": "assistant", "content": "a1"}),
             obs("s1", "TOOL", 2),
             obs(
@@ -344,9 +351,10 @@ def test_load_conversation_takes_the_last_generation_before_the_step(monkeypatch
             ),
             obs("s2", "TOOL", 4),
             obs("g3", "GENERATION", 5, input=[], output="later"),
-        ]
+        ],
+        meta=SimpleNamespace(cursor=None),
     )
-    fake = SimpleNamespace(api=SimpleNamespace(trace=SimpleNamespace(get=lambda trace_id: trace)))
+    fake = SimpleNamespace(api=SimpleNamespace(observations=SimpleNamespace(get_many=lambda **kw: observations)))
     monkeypatch.setattr("langfuse.get_client", lambda: fake)
 
     messages = forking.load_conversation("t", "s2")

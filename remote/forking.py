@@ -162,8 +162,7 @@ def load_conversation(trace_id: str, observation_id: str) -> list[dict]:
     """
     from langfuse import get_client
 
-    trace = get_client().api.trace.get(trace_id)
-    observations = sorted(trace.observations, key=lambda o: o.start_time)
+    observations = sorted(_observations(get_client(), trace_id), key=lambda o: o.start_time)
     step = next((o for o in observations if o.id == observation_id), None)
     if step is None:
         raise LookupError(f"Trace {trace_id} に observation {observation_id} が無い")
@@ -171,12 +170,38 @@ def load_conversation(trace_id: str, observation_id: str) -> list[dict]:
     if not generations:
         raise LookupError(f"Trace {trace_id} の、その Step より前に LLM の呼び出しが無い")
     last = generations[-1]
-    messages = [_text_only(m) for m in _messages(last.input)]
-    reply = last.output
+    messages = [_text_only(m) for m in _messages(_json(last.input))]
+    reply = _json(last.output)
     if isinstance(reply, dict):
         reply = reply.get("content") or ""
     messages.append({"role": "assistant", "content": str(reply or "")})
     return messages
+
+
+def _observations(client: Any, trace_id: str) -> list[Any]:
+    """Trace の observation を全部。Langfuse v4（events_only）では trace の取得 API が無いので、
+    observations の API を使う（input / output は JSON の文字列で返る）。"""
+    out: list[Any] = []
+    cursor = None
+    while True:
+        page = client.api.observations.get_many(
+            trace_id=trace_id, limit=100, cursor=cursor, fields="core,basic,io,metadata"
+        )
+        out.extend(page.data)
+        cursor = getattr(page.meta, "cursor", None)
+        if not cursor or not page.data:
+            return out
+
+
+def _json(value: Any) -> Any:
+    import json
+
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _messages(value: Any) -> list[dict]:

@@ -118,6 +118,7 @@ uv run --env-file .env examples/fork_compare.py --snapshot snap_... --task liber
   新しい Trace として送る
 - `RunCode([code, ...], then=agent)` … 決まったコードを実行してから、Agent に続きを任せる
 - `load_conversation(trace_id, observation_id)` … Langfuse から、その Step までの LLM との会話を取り出す
+  （Langfuse v4 の events_only モードでも使える observations の API を使う）
 
 ### 1.6 Langfuse での見え方
 
@@ -449,9 +450,39 @@ worker は backend が取り出すまで Snapshot を最大 2 つ持つ（ふつ
 - 画像や点群は Gym の Snapshot には入れない（描き直す）。生成コードの変数に持っている分だけ増える
 - 圧縮は zlib（level 6）。物理状態は 1/3 程度になる。乱数の画像はほとんど縮まない
 
-### 5.2 GPU マシン（実際の worker・MinIO）
+### 5.2 GPU マシン（実際の backend・Docker の worker・MinIO、手元 PC から VPN 越し）
 
-（デプロイ後に `scripts/snapshot_bench.py --task cube_stack` / `--task libero_object_0` で測って追記する）
+2026-10-23 に計測した。`scripts/snapshot_bench.py --task cube_stack_low` / `--task libero_object_0_low`。
+Low-Level 版のタスクを使い、関節角を直接動かす関数だけで動かしている（知覚サーバは使わない）。
+
+| 項目 | robosuite（cube_stack_low） | LIBERO（libero_object_0_low） |
+| --- | --- | --- |
+| Gym（圧縮前 → 後） | 38.4KB → 12.7KB | 43.3KB → 15.8KB |
+| 生成コードの変数（関数 1 つ + list + 乱数の状態） | 7.0KB → 6.3KB | 7.0KB → 6.4KB |
+| Snapshot 全体 | 20.4KB | 23.5KB |
+| worker で作る | 7ms | 8ms |
+| backend が取り出す | 6ms | 6ms |
+| MinIO に置く | 28ms | 29ms |
+| クライアントが待つ保存全体 | 45ms | 46ms |
+| Step（OFF / ON、保存を含む） | 0.20s / 0.25s | 0.40s / 0.45s |
+| セッション作成（通常） | 11.3s | 16.1s |
+| 再開（Fork 作成。worker の起動 + 復元） | 12.9s | 18.1s |
+| うち復元だけ | 1.47s | 2.08s |
+| 変数に点群（12000×3 float64）を足す | +281KB（圧縮後 +265KB） | 同左 |
+| 変数に画像（512×800×3 uint8、乱数）を足す | +1.2MB（ほぼ圧縮されない） | 同左 |
+
+- Snapshot の ON で、1 Step あたり約 50ms 増える（大半は MinIO への書き込み）。LLM を使う
+  trial の Step（数秒〜数十秒）に比べて小さい
+- 再開は通常のセッション作成 + 1.5〜2 秒
+
+**受け入れのシナリオ**（`scripts/snapshot_e2e_check.py`）は、両方のタスクで 12 / 12 が通った。
+Step 1 の関数を別の worker で使う、元の Step 3 を別の worker でやり直すと関節角と reward が元と
+一致する、Fork からの再分岐、元の Snapshot が変わらない、無い Snapshot を断る、の各項目。
+
+実際の LLM（Qwen 3.5 9B）で `libero_object_0` を Snapshot ON で 10 Step 回し、10 Step すべての
+Snapshot が保存され、Langfuse の各 `env.step` に Snapshot ID が載ることを確かめた。その Step 1 の
+Snapshot から `examples/resume_multiturn.py` で会話ごと再開し、Fork の Trace の `parent_trace_id` /
+`parent_observation_id` が元の Trace と env.step を指すことも確かめた。
 
 ---
 
