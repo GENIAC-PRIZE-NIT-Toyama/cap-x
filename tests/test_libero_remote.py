@@ -23,7 +23,9 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def test_all_tasks_of_the_five_standard_suites_are_selectable() -> None:
-    libero = {k: v for k, v in tasks.TASKS.items() if v.runtime == "libero"}
+    libero = {
+        k: v for k, v in tasks.TASKS.items() if v.runtime == "libero" and not k.endswith(tasks.LOW_SUFFIX)
+    }
     assert len(libero) == 130
     for suite, count in tasks.LIBERO_SUITES.items():
         assert f"{suite}_0" in libero and f"{suite}_{count - 1}" in libero
@@ -156,7 +158,8 @@ def test_task_lists_are_summarized_by_range() -> None:
     text = tasks.summarize(tasks.TASKS)
     assert "libero_90_0〜89" in text and "libero_object_0〜9" in text
     assert "cube_stack" in text
-    assert "libero_object_3" not in text, "範囲にまとめる"
+    assert "libero_90_0〜89_low" in text and "cube_stack_low" in text
+    assert "libero_object_3" not in text and "libero_object_3_low" not in text, "範囲にまとめる"
     assert tasks.summarize(["a_1", "a_3"]) == "a_1, a_3", "飛び番は並べる"
 
 

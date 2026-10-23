@@ -1,0 +1,54 @@
+# full.yaml と同じタスクを、Low-Level Primitives の API で回すスイート（35 タスク）。
+#
+#   uv run --env-file .env suite.py suites/full-low.yaml --agent agents/my_agent.py
+#
+# タスクの並びは full.yaml と揃える（`<タスク名>_low` にしただけ）。full.yaml を
+# 変えたら、こちらも同じように変える。
+#
+# Low-Level では get_object_pose / goto_pose のような高水準の関数が無く、
+# get_observation / segment_sam3_text_prompt / plan_grasp / solve_ik / move_to_joints
+# などを組み合わせる。
+#
+# 書けるキーは quick.yaml を参照。
+name: full-low
+trials: 1
+max_steps: 20
+tasks:
+  # robosuite（5 / 6。two_arm_lift は入れない）
+  - cube_lifting_low
+  - cube_stack_low
+  - cube_restack_low
+  - nut_assembly_low
+  - spill_wipe_low
+  # LIBERO-90（20 / 90）
+  - libero_90_3_low   # KITCHEN_SCENE10 奥のバターを上の引き出しに入れて閉める（複合・位置の指定）
+  - libero_90_6_low   # KITCHEN_SCENE1 下の引き出しを開ける（関節物体）
+  - libero_90_9_low   # KITCHEN_SCENE1 黒いボウルを皿に置く（基本の pick & place）
+  - libero_90_16_low  # KITCHEN_SCENE2 手前のボウルを真ん中のボウルに重ねる（積む）
+  - libero_90_20_low  # KITCHEN_SCENE3 コンロをつける（つまみ）
+  - libero_90_21_low  # KITCHEN_SCENE3 コンロをつけてフライパンを載せる（複合）
+  - libero_90_23_low  # KITCHEN_SCENE4 下の引き出しを閉めて上を開ける（関節物体 2 つ）
+  - libero_90_27_low  # KITCHEN_SCENE4 ワインボトルをワインラックに置く
+  - libero_90_32_low  # KITCHEN_SCENE5 ケチャップを上の引き出しに入れる
+  - libero_90_33_low  # KITCHEN_SCENE6 電子レンジを閉める
+  - libero_90_37_low  # KITCHEN_SCENE7 白いボウルを皿の右に置く（位置関係）
+  - libero_90_39_low  # KITCHEN_SCENE8 コンロを消す
+  - libero_90_42_low  # KITCHEN_SCENE9 フライパンを棚の下に入れる
+  - libero_90_46_low  # LIVING_ROOM_SCENE1 アルファベットスープをかごに入れる
+  - libero_90_57_low  # LIVING_ROOM_SCENE3 クリームチーズをトレイに入れる
+  - libero_90_63_low  # LIVING_ROOM_SCENE4 ボウルを重ねてトレイに入れる（積む＋複合）
+  - libero_90_68_low  # LIVING_ROOM_SCENE5 黄白のマグを右の皿に置く（似た物体の区別）
+  - libero_90_70_low  # LIVING_ROOM_SCENE6 プリンを皿の右に置く（位置関係）
+  - libero_90_74_low  # STUDY_SCENE1 本をキャディの左の仕切りに入れる
+  - libero_90_89_low  # STUDY_SCENE4 右の本を棚の下に入れる
+  # LIBERO-10（全 10）
+  - libero_10_0_low
+  - libero_10_1_low
+  - libero_10_2_low
+  - libero_10_3_low
+  - libero_10_4_low
+  - libero_10_5_low
+  - libero_10_6_low
+  - libero_10_7_low
+  - libero_10_8_low
+  - libero_10_9_low
