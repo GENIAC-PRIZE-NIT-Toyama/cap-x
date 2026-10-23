@@ -152,6 +152,36 @@ LIBERO-90 は、操作の種類・シーン・複雑さが重ならないよう�
 実行中に Agent ファイルを書き換えると止まる（違う Agent の結果が混ざるため）。
 集計だけやり直すときは `uv run suite_summary.py <実行フォルダ>`。
 
+## トレース（Langfuse）
+
+`.env` に `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` があれば、
+`trial.py` も `suite.py` も、試行ごとの挙動を Langfuse に送る。キーが無ければ送らない
+（実行は今までどおり）。キーがあっても `--no-trace` で止められる。キーと URL は管理者に聞く。
+誰の実行かは `CAPX_USER` で区別する（ローマ字で書く。日本語だと付かない）。
+
+Agent には何も書かなくてよい。OpenAI SDK の呼び出し（`capx.llm.client.query_model` も、
+自分で作った `OpenAI()` も）と `env.step()` が自動で記録される。OpenAI SDK 以外で LLM を
+呼んだ分は記録されない。
+
+| Langfuse | 中身 |
+|---|---|
+| Session | 1 回の実行。ID は保存先と同じ `<モデル名>/<タスク名 or suite_名前>/<日時>` |
+| Trace | 1 試行（名前はタスク名）。input に task・instruction・seed、output に結果と動画（`combined.mp4`）。User は `CAPX_USER`、Version は Agent ファイルのハッシュ |
+| Generation | LLM の呼び出し。プロンプト・応答・トークン数。画像もそのまま見える |
+| Tool `env.step` | 送ったコードと、`ok` / `stdout` / `stderr`。エラーは WARNING で色が付く |
+| Score | `reward` / `task_completed` / `exec_ok` / `failure_kind`（失敗したときだけ） |
+
+呼んだ順に並ぶので、LLM がどのコードを書き、どう失敗して、次に何を直したかを 1 画面で追える。
+タグは `trial` か `suite` と `suite:<名前>`。
+
+GPU マシン・LLM サーバの障害でやり直した試行は、やり直すたびに別のトレースになる。
+失敗したほうには `infra_failed` タグが付き、score は付かない（集計から外れるのと同じ）。
+`--no-save` のときは動画を保存しないので、動画も送らない。
+
+`--trace-step-videos` を付けると、`env.step` ごとにその step の動画も送る。どの step で
+何が起きたかを動画で追えるが、Langfuse の容量が試行あたり約 2 倍（10 step で 2.5〜3.6MB、
+20 step で 5〜7MB）になる。失敗した試行を 1 つ詳しく見たいときに、`trial.py` で回し直す使い方を想定している。
+
 ## 注意
 
 `agents/` のファイルは**あなたの PC でそのまま実行される**。他人の Agent を

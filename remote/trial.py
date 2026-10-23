@@ -22,6 +22,10 @@ from capx.bench.args import AgentArgs
 from capx.bench.errors import explain, explain_load, highlight_generated_error
 
 HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:  # `tracing` を、どこから読み込まれても見つけられるように
+    sys.path.insert(0, str(HERE))
+
+import tracing  # noqa: E402
 
 
 def main(
@@ -34,6 +38,8 @@ def main(
     output_dir: str | None = None,
     save: bool = True,
     record_video: bool | None = None,
+    trace: bool = True,
+    trace_step_videos: bool = False,
     endpoint: str | None = None,
 ) -> None:
     """Agent を 1 回（または --total-trials 回）走らせる。
@@ -51,6 +57,10 @@ def main(
         save: `--no-save` で結果を保存しない。
         record_video: 動画を受け取って保存する。省略すると、結果を保存するときは保存する
             （動画の書き出しで各ステップが少し長くなる）。
+        trace: `--no-trace` で Langfuse に送らない。キー（LANGFUSE_PUBLIC_KEY /
+            LANGFUSE_SECRET_KEY）が無ければ、付けなくても送らない。
+        trace_step_videos: `env.step` の記録に、その step の動画も付ける。Langfuse の容量が
+            試行あたり約 2 倍になるので、失敗した試行を詳しく見たいときだけ使う。
         endpoint: worker に直接つなぐ（`tcp://host:19500`）。通常は使わない。
     """
     agent_path = _resolve_agent(agent)
@@ -76,6 +86,9 @@ def main(
         record_video = save
     config = {"output_dir": str(run_dir) if run_dir else None, "record_video": record_video}
     meta = {"agent_spec": str(agent_path), "model": model, "endpoint_task": task}
+    session = tracing.session_id(run_dir, model, task)
+    if tracing.setup(trace, step_videos=trace_step_videos):
+        print(f"トレース: Langfuse の session {session}")
 
     holder = {"env": _connect(endpoint, server_url, task, record_video)}
     summaries: list = []
@@ -85,6 +98,7 @@ def main(
             summary = _run_with_retries(
                 holder, runner, trial, config, seed, meta,
                 lambda: _connect(endpoint, server_url, task, record_video),
+                session=session,
             )
             summaries.append(summary)
             steps = list(holder["env"].recorded_steps)
@@ -94,6 +108,7 @@ def main(
         # やり直しの途中（閉じてから繋ぎ直すまで）に止まると None のまま
         if holder["env"] is not None:
             holder["env"].close()
+        tracing.flush()
 
     _show(summaries, steps)
 
@@ -106,20 +121,36 @@ MAX_INFRA_RETRIES = 3
 RETRY_BASE_WAIT_S = 10.0
 
 
-def _run_with_retries(holder, runner, trial, config, seed, meta, reconnect, sleep=time.sleep):
+def _run_with_retries(
+    holder, runner, trial, config, seed, meta, reconnect, sleep=time.sleep, session: str = ""
+):
     """環境側の障害なら、新しいセッションを作り直して同じ trial をやり直す。
 
     Agent の責任（予算超過・Agent のバグ）ではリトライしない。中断した後の環境は
     状態が分からないので、使い回さず作り直す。やり直した回数は結果に残る。
+    attempt ごとに 1 つトレースを作る（Langfuse が有効なとき）。
     """
 
     def attempt(retries):
         if holder["env"] is None:
             holder["env"] = reconnect()
-        return run_trial(
-            holder["env"], runner, trial, config, seed=seed, meta=meta,
-            infrastructure_retries=retries,
-        )
+        with tracing.trial_trace(
+            session=session,
+            task=meta.get("endpoint_task", ""),
+            trial=trial,
+            seed=seed if seed is not None else trial,
+            attempt=retries + 1,
+            model=meta.get("model", ""),
+            agent_path=meta.get("agent_spec", ""),
+            tags=["trial"],
+            infra_errors=(EnvUnavailable,),
+        ) as trace:
+            summary = run_trial(
+                trace.wrap(holder["env"]), runner, trial, config, seed=seed, meta=meta,
+                infrastructure_retries=retries,
+            )
+            trace.finish(summary)
+            return summary
 
     def drop_env(exc, retries, gave_up):
         if not gave_up:  # 使い切ったときは呼び出し元が閉じる
