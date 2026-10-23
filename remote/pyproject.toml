@@ -32,6 +32,9 @@ dependencies = [
   # いるので、submodule も CUDA も要求しない。
   # 検証: submodule 未取得の clone で `uv sync` が 66 パッケージで通ること。
   "capx",
+  # trial ごとのトレース（remote/tracing.py）。キーが無ければ送らない。
+  # v5 は Python 3.11 以上が要るので、3.10 の手元PCとそろえて v4 に留める。
+  "langfuse>=4.18,<5",
 ]
 
 [tool.uv.sources]

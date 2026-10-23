@@ -37,6 +37,7 @@ if str(HERE) not in sys.path:  # `suite_summary` / `trial` を、どこから実
     sys.path.insert(0, str(HERE))
 
 import suite_summary  # noqa: E402
+import tracing  # noqa: E402
 from suite_summary import CONFIG_KINDS, INFRA_EVENTS, LLM_INFRA_KINDS  # noqa: E402
 from trial import (  # noqa: E402
     MAX_INFRA_RETRIES,
@@ -307,8 +308,25 @@ class Runner:
     def _attempt(self, holder, task, trial, seed, retries):
         if holder["env"] is None:
             holder["env"] = self._connect(task)
+        with tracing.trial_trace(
+            session=tracing.session_id(self.run_dir, self.model, task),
+            task=task,
+            trial=trial,
+            seed=seed,
+            attempt=retries + 1,
+            model=self.model,
+            agent_path=self.agent_path,
+            tags=["suite", f"suite:{self.suite.name}"],
+            infra_errors=(EnvUnavailable, _LlmInfraError),
+        ) as trace:
+            summary = self._run_trial(trace, holder, task, trial, seed, retries)
+            trace.finish(summary)
+            return summary
+
+    def _run_trial(self, trace, holder, task, trial, seed, retries):
+        # 外側に TracedEnv を置き、上限で止めた step（BudgetExceeded）も記録に残す
         summary = run_trial(
-            StepLimitedEnv(holder["env"], self.suite.max_steps),
+            trace.wrap(StepLimitedEnv(holder["env"], self.suite.max_steps)),
             self._load_agent(),
             trial,
             {"output_dir": str(self.run_dir / task), "record_video": self.record_video},
@@ -512,6 +530,8 @@ def main(
     output_dir: str | None = None,
     record_video: bool = True,
     parallel: int = 1,
+    trace: bool = True,
+    trace_step_videos: bool = False,
     endpoint: str | None = None,
 ) -> None:
     """スイートの全タスクを回し、最後に集計する。
@@ -525,6 +545,10 @@ def main(
         record_video: `--no-record-video` で動画を保存しない。
         parallel: 同時に回すタスクの数（1〜4）。GPU マシンの空きを見て、混んでいれば待つ。
             並べると GPU・LLM サーバを取り合うので、実行時間は 1 本ずつより長くなる。
+        trace: `--no-trace` で Langfuse に送らない。キー（LANGFUSE_PUBLIC_KEY /
+            LANGFUSE_SECRET_KEY）が無ければ、付けなくても送らない。
+        trace_step_videos: `env.step` の記録に、その step の動画も付ける。Langfuse の容量が
+            試行あたり約 2 倍になるので、失敗した試行を詳しく見たいときだけ使う。
         endpoint: worker に直接つなぐ（`tcp://host:19500`）。タスクが 1 つのスイートだけ。
             通常は使わない。
     """
@@ -543,6 +567,8 @@ def main(
     runner = _prepare(suite, agent, model, output_dir, record_video, parallel, server_url, endpoint)
 
     print(f"保存先: {runner.run_dir}")
+    if tracing.setup(trace, step_videos=trace_step_videos):
+        print(f"トレース: Langfuse の session {tracing.session_id(runner.run_dir, runner.model, '')}")
     stopped = None
     try:
         runner.run()
@@ -551,6 +577,7 @@ def main(
     except KeyboardInterrupt:
         stopped = "中断した"
     finally:
+        tracing.flush()
         _update_run(runner.run_dir, finished_at=_now())
         print()
         print(suite_summary.render(suite_summary.write_summary(runner.run_dir)))
