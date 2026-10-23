@@ -40,6 +40,11 @@ class FrankaLiberoEnv(FrameBufferMixin, BaseEnv):
 
     #: 何 sim ステップごとに録るか（従来どおり 4）。
     _SUBSAMPLE_RATE: int = 4
+    #: reset の後に物体が止まるのを待つステップ数（1 ステップ 1/20 秒）の下限と上限。
+    _SETTLE_MIN_STEPS: int = 10
+    _SETTLE_MAX_STEPS: int = 100
+    #: 物体が止まったとみなす速さ（並進 m/s・回転 rad/s の各成分の絶対値の最大）。
+    _SETTLE_SPEED: float = 0.01
 
     def __init__(
         self,
@@ -158,18 +163,9 @@ class FrankaLiberoEnv(FrameBufferMixin, BaseEnv):
             # NOTE: currently not used
             self._rng = np.random.default_rng(seed)
 
-        # We call handle.reset, but then we might want to override the init state
-        libero_obs, libero_info = self.handle.reset(seed=seed)
-        
-        # Override the init state based on the seed (which corresponds to trial ID)
-        if self.handle.init_states is not None and len(self.handle.init_states) > 0:
-            if seed is not None:
-                # Assuming seed is the trial number (1-based)
-                state_idx = (seed - 1) % len(self.handle.init_states)
-                self.handle.env.set_init_state(self.handle.init_states[state_idx])
-                # Reset simulation again to apply the new init state
-                libero_obs = self.handle.env.reset()
-                libero_info = {}
+        # seed は試行番号（1 始まり）。試行ごとに LIBERO の初期状態を順に使う。
+        state_index = 0 if seed is None else seed - 1
+        libero_obs, libero_info = self.handle.reset(seed=seed, state_index=state_index)
 
         self._current_obs = libero_obs
         self._current_info = libero_info
@@ -181,10 +177,7 @@ class FrankaLiberoEnv(FrameBufferMixin, BaseEnv):
         self.home_joint_position = np.array(libero_obs["robot0_joint_pos"], dtype=np.float64)
         self._gripper_fraction = 1.0
 
-        # Post-reset settling: let physics stabilize (objects drop, joints settle).
-        # 10 steps suffice — joints converge by step ~5.
-        for _ in range(10):
-            self._step_once()
+        self._settle()
 
         obs = self.get_observation()
         self.gripper_link_wxyz_xyz = np.concatenate(
@@ -301,6 +294,31 @@ class FrankaLiberoEnv(FrameBufferMixin, BaseEnv):
 
         if self._record_frames and self._sim_step_count % self._subsample_rate == 0:
             self._record_frame()
+
+    def _settle(self) -> None:
+        """reset の後、物体が止まるまで何もせずに sim を進める。
+
+        物体が台の少し上に置かれ、落ちる途中から始まることがある。止まる前に返すと、
+        最初の画像（Agent が最初に見るもの）に宙に浮いた物体が写り、知覚 API も
+        落ちる途中の位置を返す。ロボットの関節は 5 ステップほどで落ち着くので、
+        最低 `_SETTLE_MIN_STEPS` は進め、そこからは物体の速さで判断する。
+        """
+        dofs = self._free_joint_dofs()
+        for step in range(self._SETTLE_MAX_STEPS):
+            self._step_once()
+            if step + 1 < self._SETTLE_MIN_STEPS:
+                continue
+            qvel = self.handle.env.sim.data.qvel[dofs]
+            if dofs.size == 0 or np.abs(qvel).max() < self._SETTLE_SPEED:
+                break
+
+    def _free_joint_dofs(self) -> np.ndarray:
+        """自由に動く物体（free joint を持つもの）の速度の添字。ロボットは入らない。"""
+        model = self.handle.env.sim.model
+        free = np.flatnonzero(np.asarray(model.jnt_type) == 0)  # mjJNT_FREE
+        if free.size == 0:
+            return np.zeros(0, dtype=int)
+        return np.concatenate([np.arange(model.jnt_dofadr[j], model.jnt_dofadr[j] + 6) for j in free])
 
     def _get_object_pose(self, obj_name: str) -> tuple[np.ndarray, np.ndarray]:
         """Get the pose of an object in the environment as a position (3,) and WXYZ quaternion (4,).

@@ -16,11 +16,17 @@ class LiberoHandle:
     task_language: str
     init_states: Any
 
-    def reset(self, seed: int | None = None) -> tuple[Any, dict[str, Any]]:
+    def reset(self, seed: int | None = None, state_index: int = 0) -> tuple[Any, dict[str, Any]]:
+        """`reset()` の後に、LIBERO が用意した初期状態の `state_index` 番目を当てる。
+
+        順番が大事。LIBERO は hard reset で、`reset()` のたびにモデルを作り直して物体を
+        置き直す。先に初期状態を当てても `reset()` で捨てられ、サンプラが振った位置
+        （宙に浮いていることがある）から始まってしまう。
+        """
         self.env.seed(seed)
         obs = self.env.reset()
-        if self.init_states is not None:
-            self.env.set_init_state(self.init_states[0])
+        if self.init_states is not None and len(self.init_states) > 0:
+            obs = self.env.set_init_state(self.init_states[state_index % len(self.init_states)])
         return obs, {}
 
     def step(self, action: list[float]) -> tuple[Any, float, bool, dict[str, Any]]:
