@@ -127,6 +127,45 @@ def test_query_model_chat_wire_optional_params_included_when_set(fake_server):
     assert body["reasoning_effort"] == "medium"
 
 
+def test_query_model_chat_wire_disables_thinking_by_default(fake_server, monkeypatch):
+    base_url, handler = fake_server
+    handler.responses = [(200, CHAT_COMPLETION_RESPONSE)]
+    monkeypatch.delenv("CAPX_LLM_THINKING", raising=False)
+
+    query_model(ModelQueryArgs(model="test-model", server_url=base_url, wire="chat"), [{"role": "user", "content": "hi"}])
+
+    assert handler.received[0]["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize(
+    ("thinking", "env"),
+    [(True, None), (None, "1"), (None, "true")],
+)
+def test_query_model_chat_wire_omits_thinking_flag_when_enabled(fake_server, monkeypatch, thinking, env):
+    base_url, handler = fake_server
+    handler.responses = [(200, CHAT_COMPLETION_RESPONSE)]
+    if env is None:
+        monkeypatch.delenv("CAPX_LLM_THINKING", raising=False)
+    else:
+        monkeypatch.setenv("CAPX_LLM_THINKING", env)
+
+    args = ModelQueryArgs(model="test-model", server_url=base_url, wire="chat", thinking=thinking)
+    query_model(args, [{"role": "user", "content": "hi"}])
+
+    assert "chat_template_kwargs" not in handler.received[0]["body"]
+
+
+def test_query_model_explicit_thinking_off_beats_env(fake_server, monkeypatch):
+    base_url, handler = fake_server
+    handler.responses = [(200, CHAT_COMPLETION_RESPONSE)]
+    monkeypatch.setenv("CAPX_LLM_THINKING", "1")
+
+    args = ModelQueryArgs(model="test-model", server_url=base_url, wire="chat", thinking=False)
+    query_model(args, [{"role": "user", "content": "hi"}])
+
+    assert handler.received[0]["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
 def test_query_model_responses_wire(fake_server):
     base_url, handler = fake_server
     handler.responses = [(200, RESPONSES_API_RESPONSE)]

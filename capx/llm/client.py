@@ -11,6 +11,11 @@ each settable via CLI arg or environment variable:
   SDK appends the right path for the chosen wire). Env: ``OPENAI_BASE_URL``.
 - ``api_key``: bearer credential. Env: ``OPENAI_API_KEY``.
 
+Thinking (chat wire only) is off by default: requests carry
+``chat_template_kwargs={"enable_thinking": False}`` for vLLM-served models such
+as Qwen. Set ``thinking=True`` or ``CAPX_LLM_THINKING=1`` to leave it out, e.g.
+for servers that reject unknown fields (OpenAI itself).
+
 No model name is ever inspected to decide request shape; the caller is
 responsible for choosing a wire/model combination the target server supports.
 """
@@ -56,6 +61,8 @@ class ModelQueryArgs:
     temperature: float | None = None
     max_tokens: int = 4096
     reasoning_effort: str | None = None
+    #: None falls back to CAPX_LLM_THINKING (default: off)
+    thinking: bool | None = None
     debug: bool = False
 
 
@@ -170,7 +177,17 @@ def _build_chat_kwargs(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) 
         kwargs["temperature"] = args.temperature
     if getattr(args, "reasoning_effort", None) is not None:
         kwargs["reasoning_effort"] = args.reasoning_effort
+    if not _thinking_enabled(args):
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
     return kwargs
+
+
+def _thinking_enabled(args: "LaunchArgs | ModelQueryArgs") -> bool:
+    """Explicit ``thinking`` on args wins; otherwise ``CAPX_LLM_THINKING`` (default off)."""
+    thinking = getattr(args, "thinking", None)
+    if thinking is not None:
+        return bool(thinking)
+    return os.getenv("CAPX_LLM_THINKING", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _build_responses_kwargs(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> dict[str, Any]:
