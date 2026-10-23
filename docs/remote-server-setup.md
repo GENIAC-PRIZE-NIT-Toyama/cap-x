@@ -1,22 +1,17 @@
 # リモート実行の GPU マシン側の準備（管理者向け）
 
 参加者が手元 PC の `remote/trial.py` から使う、GPU マシン側の準備。参加者向けの手順は
-[`remote/README.md`](../remote/README.md)、設計は [`docs/RemoteDevelopment.md`](RemoteDevelopment.md)。
-
-```
-手元 PC ──HTTP :8080──────▶ backend（セッションを作り、worker を docker run する）
-        ══ZMQ :19500〜19599═▶ worker コンテナ（1 セッション 1 つ。シミュレータと生成コード）
-                                 └─ 中継（capx-proxy-*）─▶ 知覚 API（SAM3 / GraspNet / PyRoKi / Molmo2）
-```
+[`remote/README.md`](../remote/README.md)、仕組み（backend・worker・中継の関係）は
+[`docs/RemoteDevelopment.md`](RemoteDevelopment.md)。
 
 ## 0. 前提
 
 - Docker と NVIDIA Container Toolkit（worker は `--runtime nvidia` で起動する）。実行するユーザーが
   `docker` を sudo なしで使えること
 - uv と Python 3.10
-- 知覚 API（SAM3・GraspNet・PyRoKi）が、このマシンか同じネットワークのどこかで動いていること
-  （起動は README の「Perception API / PyRoKi / OpenAI 互換 API のセットアップ」）。
-  LIBERO を使うなら Molmo2（OpenAI 互換の VLM サーバ）も
+- 知覚 API（SAM3・GraspNet・PyRoKi）と Molmo2（OpenAI 互換の VLM サーバ）が、このマシンか
+  同じネットワークのどこかで動いていること
+  （起動は README の「Perception API / PyRoKi / OpenAI 互換 API のセットアップ」）
 - ディスク: worker image は 1 つ約 12GB（robosuite 用と LIBERO 用の 2 つ）。ビルドキャッシュでさらに増える
 
 ## 1. submodule を取る
@@ -34,11 +29,6 @@ git submodule update --init capx/third_party/sam3 capx/third_party/robosuite \
 docker build -f docker/worker/Dockerfile -t capx-worker:latest .                # robosuite
 docker build -f docker/worker/Dockerfile.libero -t capx-worker-libero:latest .  # LIBERO
 ```
-
-コードを更新したら（`git pull`）、worker の中で動くコードが変わったときは作り直す。古い image を
-消してから作ると、ディスクを使い切らない（`docker image prune`、`docker builder prune`）。
-別の名前の image を使うときは、backend を起動する環境で `CAPX_WORKER_IMAGE` /
-`CAPX_WORKER_IMAGE_LIBERO` を設定する（digest での固定もできる）。
 
 ## 3. 知覚 API への中継を起動する
 
@@ -58,7 +48,7 @@ cd ../..
 
 ```bash
 uv venv -p 3.10 && source .venv/bin/activate
-uv sync --active --extra robosuite --extra server
+uv sync --active --extra server
 
 cp .envrc.example .envrc   # 次の値を書く
 source .envrc
@@ -71,6 +61,9 @@ source .envrc
 | `CAPX_ENV_SERVER_TOKENS` | 認証を有効にするときだけ（`名前:トークン` をカンマ区切り）。既定は認証なし |
 | `CAPX_WORKER_MEMORY_ROBOSUITE` / `CAPX_WORKER_MEMORY_LIBERO` | worker 1 つのメモリの上限を変えるときだけ（既定 `4g` / `5g`） |
 | `CAPX_SNAPSHOT_S3_ENDPOINT` / `CAPX_SNAPSHOT_S3_BUCKET` / `CAPX_SNAPSHOT_S3_ACCESS_KEY_ID` / `CAPX_SNAPSHOT_S3_SECRET_ACCESS_KEY` | Snapshot / Resume / Fork を使うときだけ。保存先の MinIO（[Snapshot.md の 4 章](Snapshot.md#4-管理者向け-セットアップ)）。無ければ Snapshot は使えない（通常の trial はそのまま動く） |
+
+`.venv` に入れるのは backend の分（`--extra server`）だけでよい。シミュレータと知覚のコードは
+worker image の中で動く。
 
 ## 5. backend を起動する
 
@@ -105,7 +98,6 @@ GPU マシンで:
 
 ```bash
 curl http://localhost:8080/health     # 返事があれば backend は動いている
-curl http://localhost:8080/sessions   # 使用中の数・上限・メモリの使用量
 ```
 
 参加者の PC で（`remote/README.md` の準備のあと）:
@@ -115,6 +107,27 @@ cd remote
 uv run doctor.py      # 到達・タスク一覧・空きなどを順に調べる
 uv run trial.py       # cube_stack を 1 回
 ```
+
+## 補足
+
+**image を作り直す**: コードを更新して（`git pull`）、worker の中で動くコードが変わったときは作り直す。
+古い image を消してから作ると、ディスクを使い切らない（`docker image prune`、`docker builder prune`）。
+別の名前の image を使うときは、backend を起動する環境で `CAPX_WORKER_IMAGE` /
+`CAPX_WORKER_IMAGE_LIBERO` を設定する（digest での固定もできる）。
+
+**空きを見る**: 運用中、参加者が「満員で作れない」と言ってきたとき。
+
+```bash
+curl http://localhost:8080/sessions   # 使用中の数・上限・メモリの使用量
+```
+
+**片方だけホストする**: 既定は両方のタスクを出す。片方だけでよいなら手順 1〜3 を減らせる。
+backend 自体はどちらでも `--extra server` だけで動く（シミュレータを import しない）。
+
+| | submodule（手順 1） | image（手順 2） | Molmo2（手順 0・3） |
+| --- | --- | --- | --- |
+| robosuite だけ | `sam3` `robosuite` | `capx-worker:latest` | 要らない（`capx-proxy-molmo` も不要） |
+| LIBERO だけ | `sam3` `LIBERO-PRO` `libero_dependencies/robosuite` | `capx-worker-libero:latest` | 要る |
 
 ## うまくいかないとき
 
