@@ -6,7 +6,9 @@
   3. 実行結果（stdout / stderr）を LLM に返し、次のコードを書かせる
 
 LLM が「完了」と答えるか、`budget.max_steps` 回 step したら終わる。
-画像は使わない（テキストだけ）。
+最初と各 step の後に、`env.render()` の画像（カメラから見た今の様子）も渡す。画像を
+受け付けない LLM のときは `USE_IMAGES = False` にする。会話が長くなってもあふれないよう、
+LLM に渡すのはいちばん新しい 1 枚だけ（古い画像は「省略」の一言に置き換える）。
 
     uv run --env-file .env trial.py --agent agents/multiturn_agent.py
 
@@ -15,6 +17,7 @@ LLM を呼んで起きた例外は捕まえずにそのまま投げる（`exampl
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 
@@ -53,7 +56,12 @@ FEEDBACK_PROMPT = """\
 残り {remaining} 回実行できます。続きのコードを書くか、終わったなら「完了」と答えてください。
 """
 
+IMAGE_NOTE = "（今の様子をカメラで撮った画像を添えます）"
+IMAGE_DROPPED = "（このときの画像は省略）"
+
 DONE_WORD = "完了"
+#: `env.render()` の画像を LLM に渡す。画像を受け付けない LLM なら False にする
+USE_IMAGES = True
 #: LLM に返す出力の長さの上限（長すぎるとプロンプトがあふれる）
 MAX_OUTPUT_CHARS = 2000
 
@@ -75,7 +83,7 @@ class Agent(BaseAgent):
     def run(self, env: AgentEnv, task: TaskSpec, budget: Budget) -> AgentResult:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT.format(api_docs=task.api_docs)},
-            {"role": "user", "content": FIRST_PROMPT.format(instruction=task.instruction)},
+            user_message(env, FIRST_PROMPT.format(instruction=task.instruction), messages=[]),
         ]
 
         for turn in range(1, budget.max_steps + 1):
@@ -92,9 +100,33 @@ class Agent(BaseAgent):
 
             result = env.step(code)
             print(f"[{turn}] 実行: {'成功' if result.ok else 'エラー'}")
-            messages.append({"role": "user", "content": feedback(result, turn, budget.max_steps - turn)})
+            if turn == budget.max_steps:
+                break  # もう LLM には聞かないので、結果を伝える発言（と画像）は作らない
+            messages.append(user_message(env, feedback(result, turn, budget.max_steps - turn), messages))
 
         return AgentResult(notes={"turns": budget.max_steps, "finished": False})
+
+
+def user_message(env: AgentEnv, text: str, messages: list[dict]) -> dict:
+    """画像付きのユーザーの発言。前の発言の画像は外す（渡すのは最新の 1 枚だけ）。"""
+    if not USE_IMAGES:
+        return {"role": "user", "content": text}
+    for message in messages:
+        if isinstance(message["content"], list):
+            # 「画像を添えます」を「省略」に置き換える（添えたままと書いておくと LLM が迷う）
+            message["content"] = message["content"][0]["text"].removesuffix(IMAGE_NOTE) + IMAGE_DROPPED
+    jpeg = env.render()
+    if not jpeg:  # カメラが使えないなど。空の画像を送るとサーバがエラーを返すので、文字だけにする
+        return {"role": "user", "content": text}
+    # data URI で渡す。OpenAI 互換のサーバ（vLLM など）はこの形で画像を受け取る
+    image = base64.b64encode(jpeg).decode("ascii")
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": f"{text}\n{IMAGE_NOTE}"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}},
+        ],
+    }
 
 
 def extract_code(reply: str) -> str | None:
