@@ -1,6 +1,6 @@
 # full.yaml と同じタスクを、Low-Level Primitives の API で回すスイート（35 タスク）。
 #
-#   uv run --env-file .env suite.py suites/full-low.yaml --agent agents/my_agent.py
+#   uv run suite.py suites/full-low.yaml --agent agents/my_agent.py
 #
 # タスクの並びは full.yaml と揃える（`<タスク名>_low` にしただけ）。full.yaml を
 # 変えたら、こちらも同じように変える。

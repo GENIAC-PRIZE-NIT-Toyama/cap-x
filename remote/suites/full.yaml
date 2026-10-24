@@ -1,6 +1,6 @@
 # 本評価用のスイート。robosuite 5 + LIBERO-90 20 + LIBERO-10 10 = 35 タスク。
 #
-#   uv run --env-file .env suite.py suites/full.yaml --agent agents/my_agent.py
+#   uv run suite.py suites/full.yaml --agent agents/my_agent.py
 #
 # 選び方:
 #   - robosuite は two_arm_lift（両腕）を除く全タスク、LIBERO-10 は全タスク

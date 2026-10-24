@@ -35,6 +35,7 @@ dependencies = [
   # trial ごとのトレース（remote/tracing.py）。キーが無ければ送らない。
   # v5 は Python 3.11 以上が要るので、3.10 の手元PCとそろえて v4 に留める。
   "langfuse>=4.18,<5",
+  "python-dotenv>=1.0",
 ]
 
 [tool.uv.sources]

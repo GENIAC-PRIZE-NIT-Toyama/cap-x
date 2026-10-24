@@ -6,7 +6,9 @@ GPU マシンは使わない。失敗の振り分けは `run_trial` を差し替
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -26,6 +28,9 @@ sys.path.insert(0, str(REMOTE))
 
 import suite  # noqa: E402
 import suite_summary  # noqa: E402
+
+# 手元の remote/.env を読ませない（python-dotenv が無い環境では、もともと読まれない）
+NO_DOTENV = ["--env-file", os.devnull] if importlib.util.find_spec("dotenv") else []
 
 
 def _write(path: Path, text: str) -> Path:
@@ -574,11 +579,9 @@ def endpoint():
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
-    import os
-
     env = {k: v for k, v in os.environ.items() if k != "CAPX_ENV_SERVER_URL"}
     return subprocess.run(
-        [sys.executable, str(REMOTE / "suite.py"), *args],
+        [sys.executable, str(REMOTE / "suite.py"), *NO_DOTENV, *args],
         capture_output=True, text=True, timeout=120, env=env, cwd=REPO,
     )
 

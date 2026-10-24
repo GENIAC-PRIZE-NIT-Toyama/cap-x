@@ -1,7 +1,7 @@
 """複数のタスクをまとめて評価する（評価スイート）。
 
     cd remote
-    uv run --env-file .env suite.py suites/quick.yaml --agent agents/my_agent.py
+    uv run suite.py suites/quick.yaml --agent agents/my_agent.py
 
 スイートは YAML に書く（`suites/quick.yaml` / `suites/full.yaml`）。タスクを順に（`--parallel N`
 なら N タスクずつ同時に）、各タスクの中で試行を順に回し、最後に Zero-shot pass@1・error_rate・
@@ -36,6 +36,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:  # `suite_summary` / `trial` を、どこから実行しても読めるように
     sys.path.insert(0, str(HERE))
 
+import envfile  # noqa: E402, F401  # remote/.env を読む（`--env-file` で別のファイル）
 import suite_summary  # noqa: E402
 import tracing  # noqa: E402
 from suite_summary import CONFIG_KINDS, INFRA_EVENTS, LLM_INFRA_KINDS  # noqa: E402
@@ -514,7 +515,7 @@ def _check_target(suite: SuiteConfig, server_url: str | None, endpoint: str | No
     if missing:
         sys.exit(
             f"GPU マシンに無いタスクがある: {', '.join(missing)}\n"
-            "  選べるタスクは `uv run --env-file .env doctor.py` で見られる"
+            "  選べるタスクは `uv run doctor.py` で見られる"
         )
 
 
@@ -559,7 +560,7 @@ def main(
     if not endpoint and not server_url:
         sys.exit(
             "GPU マシンの場所が分からない。環境変数 CAPX_ENV_SERVER_URL を設定する"
-            "（`uv run --env-file .env suite.py ...` で実行する）"
+            "（remote/.env.example をコピーして .env にし、値を入れる）"
         )
 
     if not 1 <= parallel <= MAX_PARALLEL:

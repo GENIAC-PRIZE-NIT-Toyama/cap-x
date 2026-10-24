@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import subprocess
 import sys
 import threading
@@ -25,6 +27,8 @@ from capx.remote_env.worker.server import WorkerServer
 REPO = Path(__file__).resolve().parent.parent
 TRIAL = REPO / "remote" / "trial.py"
 EXAMPLE = REPO / "remote" / "agents" / "example_agent.py"
+# 手元の remote/.env を読ませない（python-dotenv が無い環境では、もともと読まれない）
+NO_DOTENV = ["--env-file", os.devnull] if importlib.util.find_spec("dotenv") else []
 
 
 class FakeEnv:
@@ -80,14 +84,12 @@ def worker():
 
 def _run(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
     """保存先を指定しない呼び出しは `--no-save` にする（テストで `remote/outputs/` を汚さない）。"""
-    import os
-
     env = {**os.environ, **(env_extra or {})}
     env.pop("CAPX_ENV_SERVER_URL", None) if not env_extra else None
     if "--output-dir" not in args:
         args = (*args, "--no-save")
     return subprocess.run(
-        [sys.executable, str(TRIAL), *args],
+        [sys.executable, str(TRIAL), *NO_DOTENV, *args],
         capture_output=True,
         text=True,
         timeout=120,
@@ -155,12 +157,12 @@ def test_missing_agent_says_where_it_looked() -> None:
 
 def test_no_server_configured_says_what_to_set() -> None:
     out = subprocess.run(
-        [sys.executable, str(TRIAL), "--agent", str(EXAMPLE)],
+        [sys.executable, str(TRIAL), *NO_DOTENV, "--agent", str(EXAMPLE)],
         capture_output=True,
         text=True,
         timeout=60,
         cwd=REPO,
-        env={k: v for k, v in __import__("os").environ.items() if k != "CAPX_ENV_SERVER_URL"},
+        env={k: v for k, v in os.environ.items() if k != "CAPX_ENV_SERVER_URL"},
     )
     assert out.returncode != 0
     assert "CAPX_ENV_SERVER_URL" in out.stderr + out.stdout

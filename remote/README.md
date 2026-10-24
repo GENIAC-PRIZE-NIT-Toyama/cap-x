@@ -21,15 +21,18 @@ git clone <このリポジトリの URL> cap-x
 cd cap-x/remote
 cp .env.example .env      # 管理者に聞いた値を入れる
 uv sync
-uv run --env-file .env trial.py
+uv run trial.py
 ```
 
 `agents/example_agent.py` が動けば準備完了。
 
+`remote/.env` は、どこから実行しても自動で読まれる（すでに設定されている環境変数は上書きしない）。
+`.env` 以外を使うときだけ `--env-file` を付ける（例: `uv run trial.py --env-file openai.env`）。
+
 動かないときは、原因を一度に調べられる:
 
 ```bash
-uv run --env-file .env doctor.py --agent agents/my_agent.py
+uv run doctor.py --agent agents/my_agent.py
 ```
 
 ## タスクを選ぶ
@@ -37,7 +40,7 @@ uv run --env-file .env doctor.py --agent agents/my_agent.py
 `--task` で選ぶ。省略すると `cube_stack`。
 
 ```bash
-uv run --env-file .env trial.py --task libero_object_3
+uv run trial.py --task libero_object_3
 ```
 
 | 種類 | 名前 |
@@ -68,7 +71,7 @@ Low-Level は 1 つの動作を細かく書くので、ステップ数を多く�
 
 ```bash
 cp agents/example_agent.py agents/my_agent.py
-uv run --env-file .env trial.py --agent agents/my_agent.py
+uv run trial.py --agent agents/my_agent.py
 ```
 
 クラス名は `Agent` のまま、`BaseAgent` を継承して `run` を書く（例のとおり）。
@@ -116,7 +119,7 @@ tasks:
 ```
 
 ```bash
-uv run --env-file .env suite.py suites/my_suite.yaml --agent agents/my_agent.py
+uv run suite.py suites/my_suite.yaml --agent agents/my_agent.py
 ```
 
 最後に、タスクごとの指標の表が出る。用意してあるスイート:
@@ -207,8 +210,8 @@ Langfuse の `env.step` の metadata（`snapshot_after`）、`result.json` の `
 関数や変数はそのまま使える。元の trial・Trace・Snapshot は変わらない。
 
 ```bash
-uv run --env-file .env examples/resume_simple.py --snapshot snap_... --task libero_object_3 --code "print(helper())"
-uv run --env-file .env examples/fork_compare.py --snapshot snap_... --task libero_object_3 --original old.py --fixed new.py
+uv run examples/resume_simple.py --snapshot snap_... --task libero_object_3 --code "print(helper())"
+uv run examples/fork_compare.py --snapshot snap_... --task libero_object_3 --original old.py --fixed new.py
 ```
 
 使い方・仕組み・制約は [docs/Snapshot.md](../docs/Snapshot.md)。

@@ -1,7 +1,7 @@
 """同じ Snapshot から、元のコードと直したコードをそれぞれ別の worker で実行して比べる。
 
     cd remote
-    uv run --env-file .env examples/fork_compare.py --snapshot snap_xxxxxxxx --task libero_object_3 \\
+    uv run examples/fork_compare.py --snapshot snap_xxxxxxxx --task libero_object_3 \\
         --original step3_original.py --fixed step3_fixed.py
 
 2 つの Fork は同じ状態から始まり、互いに干渉しない（worker が別）。それぞれ Langfuse に
@@ -19,6 +19,7 @@ import tyro
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import envfile  # noqa: E402, F401  # remote/.env を読む（`--env-file` で別のファイル）
 from forking import RunCode, open_fork, run_fork  # noqa: E402
 
 

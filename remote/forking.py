@@ -19,6 +19,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+import envfile  # noqa: E402, F401  # remote/.env を読む（`--env-file` で別のファイル）
 import tracing  # noqa: E402
 
 
@@ -39,7 +40,7 @@ def open_fork(
 
     server_url = os.environ.get("CAPX_ENV_SERVER_URL")
     if not server_url:
-        sys.exit("CAPX_ENV_SERVER_URL が無い（`uv run --env-file .env ...` で実行する）")
+        sys.exit("CAPX_ENV_SERVER_URL が無い（remote/.env に書く）")
     env = RemoteAgentEnv(
         server_url=server_url,
         task_id=task,

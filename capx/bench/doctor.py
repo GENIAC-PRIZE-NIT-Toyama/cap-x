@@ -52,7 +52,7 @@ def check_server(server_url: str | None) -> list[Check]:
                 "GPU マシン",
                 False,
                 "CAPX_ENV_SERVER_URL が未設定",
-                ".env に CAPX_ENV_SERVER_URL を書き、`uv run --env-file .env doctor.py` で実行する",
+                "remote/.env に CAPX_ENV_SERVER_URL を書く",
             )
         ]
     base = server_url.rstrip("/")

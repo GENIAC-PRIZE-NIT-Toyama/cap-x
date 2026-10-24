@@ -1,6 +1,6 @@
 # 素早く確かめるためのスイート。robosuite 3 + LIBERO-90 5 + LIBERO-10 2 = 10 タスク。
 #
-#   uv run --env-file .env suite.py suites/quick.yaml --agent agents/my_agent.py
+#   uv run suite.py suites/quick.yaml --agent agents/my_agent.py
 #
 # full.yaml の部分集合。シーン・操作・難しさがばらけるように選ぶ。
 #
