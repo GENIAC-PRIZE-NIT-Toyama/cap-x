@@ -78,7 +78,6 @@ uv run --env-file .env trial.py --agent agents/my_agent.py
 - `task.instruction` / `task.api_docs` … やることと、使える関数の説明
 
 LLM は手元から直接呼ぶ（`OPENAI_BASE_URL`）。GPU マシンからは呼ばない。
-LLM を使う例は `agents/multiturn_agent.py`（コードを書かせて実行し、結果を返して次を書かせる）。
 
 ## 結果
 
@@ -210,7 +209,6 @@ Langfuse の `env.step` の metadata（`snapshot_after`）、`result.json` の `
 ```bash
 uv run --env-file .env examples/resume_simple.py --snapshot snap_... --task libero_object_3 --code "print(helper())"
 uv run --env-file .env examples/fork_compare.py --snapshot snap_... --task libero_object_3 --original old.py --fixed new.py
-uv run --env-file .env examples/resume_multiturn.py --snapshot snap_... --task libero_object_3
 ```
 
 使い方・仕組み・制約は [docs/Snapshot.md](../docs/Snapshot.md)。

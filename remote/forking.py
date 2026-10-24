@@ -212,7 +212,7 @@ def _messages(value: Any) -> list[dict]:
     return [m for m in value if isinstance(m, dict) and "role" in m]
 
 
-#: 画像を外したところに入れる一言（multiturn_agent.py の IMAGE_DROPPED と同じ）。
+#: 画像を外したところに入れる一言。
 IMAGE_DROPPED = "（このときの画像は省略）"
 
 

@@ -103,7 +103,6 @@ result_b = env_b.step(code_b)
 | --- | --- |
 | `examples/resume_simple.py` | Snapshot ID から再開して、コードを 1 つ実行する |
 | `examples/fork_compare.py` | 同じ Snapshot から、元のコードと直したコード（何本でも）を別々の worker で実行し、成功・reward を並べる |
-| `examples/resume_multiturn.py` | Langfuse の会話の履歴を取り出し、Multi-turn の Agent をその Step の続きから走らせる（人が直したコードを 1 つ挟むこともできる） |
 
 ```bash
 uv run --env-file .env examples/fork_compare.py --snapshot snap_... --task libero_object_3 \
@@ -144,7 +143,7 @@ uv run --env-file .env examples/fork_compare.py --snapshot snap_... --task liber
 
 会話の履歴は Snapshot に入れていない。OpenAI SDK の記録として Langfuse に残っているものを使う
 （`load_conversation`）。画像は Langfuse の参照に置き換わっているので外し、再開した状態で
-撮り直した 1 枚を渡す（同梱の `multiturn_agent.py` も、最新の 1 枚だけを LLM に渡す）。
+撮り直した 1 枚を渡す。
 
 **会話以外の Agent の状態**（方針・カウンタ・メモなど）は Langfuse からは戻らない。必要なら、
 Agent が `env.set_agent_state(dict)` で Snapshot に添える（JSON にできるもの、64KB まで）。
@@ -158,8 +157,8 @@ class Agent(BaseAgent):
         result = env.step(code)
 ```
 
-自分の Agent を再開できるようにするには、`examples/resume_multiturn.py` の `ContinueMultiTurn` の
-ように「会話（と agent_state）を受け取って、途中から続ける」入口を作る。
+自分の Agent を再開できるようにするには、「会話（と agent_state）を受け取って、途中から続ける」
+入口を作る。
 
 ### 1.8 生成コードの変数の決まり
 
@@ -481,7 +480,7 @@ Step 1 の関数を別の worker で使う、元の Step 3 を別の worker で�
 
 実際の LLM（Qwen 3.5 9B）で `libero_object_0` を Snapshot ON で 10 Step 回し、10 Step すべての
 Snapshot が保存され、Langfuse の各 `env.step` に Snapshot ID が載ることを確かめた。その Step 1 の
-Snapshot から `examples/resume_multiturn.py` で会話ごと再開し、Fork の Trace の `parent_trace_id` /
+Snapshot から会話ごと再開し、Fork の Trace の `parent_trace_id` /
 `parent_observation_id` が元の Trace と env.step を指すことも確かめた。
 
 ---
