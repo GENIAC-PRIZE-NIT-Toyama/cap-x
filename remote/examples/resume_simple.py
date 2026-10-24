@@ -1,7 +1,7 @@
 """Snapshot ID から再開して、コードを 1 つ実行するだけの例。
 
     cd remote
-    uv run --env-file .env examples/resume_simple.py --snapshot snap_xxxxxxxx --task libero_object_3 \\
+    uv run examples/resume_simple.py --snapshot snap_xxxxxxxx --task libero_object_3 \\
         --code "print(helper())"
 
 Snapshot ID は Langfuse の env.step の metadata（snapshot_after）か、trial.py の出力で分かる。
@@ -18,6 +18,7 @@ import tyro
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import envfile  # noqa: E402, F401  # remote/.env を読む（`--env-file` で別のファイル）
 from forking import open_fork  # noqa: E402
 
 

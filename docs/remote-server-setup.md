@@ -112,8 +112,8 @@ curl http://localhost:8080/sessions   # 使用中の数・上限・メモリの�
 
 ```bash
 cd remote
-uv run --env-file .env doctor.py      # 到達・タスク一覧・空きなどを順に調べる
-uv run --env-file .env trial.py       # cube_stack を 1 回
+uv run doctor.py      # 到達・タスク一覧・空きなどを順に調べる
+uv run trial.py       # cube_stack を 1 回
 ```
 
 ## うまくいかないとき

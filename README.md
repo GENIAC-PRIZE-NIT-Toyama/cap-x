@@ -269,7 +269,7 @@ uv run --no-sync --active local/trial.py \
 # リモート実行: 手元 PC から GPU マシンのシミュレータを使う
 cd remote
 uv sync
-uv run --env-file .env trial.py --task cube_stack --agent agents/my_agent.py
+uv run trial.py --task cube_stack --agent agents/my_agent.py
 ```
 
 - リモート実行の手順（参加者向け）: [remote/README.md](remote/README.md)

@@ -97,7 +97,7 @@ result_b = env_b.step(code_b)
 
 ### 1.5 サンプル（`remote/examples/`）
 
-コピーして書き換えて使う。どれも `cd remote` してから `uv run --env-file .env ...` で動かす。
+コピーして書き換えて使う。どれも `cd remote` してから `uv run ...` で動かす。
 
 | ファイル | やること |
 | --- | --- |
@@ -105,7 +105,7 @@ result_b = env_b.step(code_b)
 | `examples/fork_compare.py` | 同じ Snapshot から、元のコードと直したコード（何本でも）を別々の worker で実行し、成功・reward を並べる |
 
 ```bash
-uv run --env-file .env examples/fork_compare.py --snapshot snap_... --task libero_object_3 \
+uv run examples/fork_compare.py --snapshot snap_... --task libero_object_3 \
     --original step3_original.py --fixed step3_fixed.py step3_fixed_v2.py
 ```
 

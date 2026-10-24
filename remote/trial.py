@@ -1,7 +1,7 @@
 """自分の Agent を GPU マシンのシミュレータで動かす。
 
     cd remote
-    uv run --env-file .env trial.py --task cube_stack --agent agents/example_agent.py
+    uv run trial.py --task cube_stack --agent agents/example_agent.py
 
 やること: Agent ファイルを読み、GPU マシンに環境を用意してもらい、Agent を 1 回
 走らせて、結果を表示する。中身は `capx.bench` にあり、ここは引数を受けて呼ぶだけ。
@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+import envfile  # noqa: F401  # remote/.env を読む（`--env-file` で別のファイル）
 import tyro
 
 from capx.agent_api import EnvUnavailable
@@ -68,8 +69,7 @@ def main(
     if not endpoint and not server_url:
         sys.exit(
             "GPU マシンの場所が分からない。環境変数 CAPX_ENV_SERVER_URL を設定する"
-            "（remote/.env.example をコピーして .env にし、"
-            " `uv run --env-file .env trial.py` で実行する）"
+            "（remote/.env.example をコピーして .env にし、値を入れる）"
         )
 
     print(f"Agent : {agent_path}")

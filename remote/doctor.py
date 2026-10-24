@@ -1,7 +1,7 @@
 """動かないときの点検。
 
     cd remote
-    uv run --env-file .env doctor.py --agent agents/my_agent.py
+    uv run doctor.py --agent agents/my_agent.py
 
 GPU マシン・認証・空き・LLM・Agent ファイルを順に調べて、直し方まで出す。
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 
+import envfile  # noqa: F401  # remote/.env を読む（`--env-file` で別のファイル）
 import tyro
 
 from capx.bench.doctor import render, run_checks

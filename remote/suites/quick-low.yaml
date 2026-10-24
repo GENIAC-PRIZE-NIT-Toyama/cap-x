@@ -1,6 +1,6 @@
 # quick.yaml と同じタスクを、Low-Level Primitives の API で回すスイート（10 タスク）。
 #
-#   uv run --env-file .env suite.py suites/quick-low.yaml --agent agents/my_agent.py
+#   uv run suite.py suites/quick-low.yaml --agent agents/my_agent.py
 #
 # タスクの並びは quick.yaml と揃える（`<タスク名>_low` にしただけ）。quick.yaml を
 # 変えたら、こちらも同じように変える。
