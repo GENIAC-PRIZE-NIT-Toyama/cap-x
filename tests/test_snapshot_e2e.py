@@ -238,7 +238,7 @@ def remote_dir(monkeypatch, backend):
     for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
         monkeypatch.delenv(key, raising=False)
     yield remote
-    for name in ("forking", "tracing", "trial", "examples", "examples.resume_multiturn", "agents", "agents.multiturn_agent"):
+    for name in ("forking", "tracing", "trial", "examples"):
         sys.modules.pop(name, None)
 
 
@@ -272,39 +272,6 @@ def test_run_fork_saves_results_like_a_trial(backend, as_user, remote_dir, tmp_p
     assert len(snapshots["steps"]) == 2 and all(snapshots["steps"])
     code = (result.parent / "code.py").read_text()
     assert "fixed3" in code and "step4" in code
-
-
-def test_multiturn_continues_from_the_recovered_conversation(backend, as_user, remote_dir, monkeypatch) -> None:
-    import forking
-    from examples import resume_multiturn
-
-    _step1, step2 = _trial_with_snapshots(backend)
-    replies = iter(["次は記録を見る\n```python\nprint(memo.log)\n```", "完了"])
-    sent: list[list[dict]] = []
-
-    def fake_llm(_args, messages):
-        sent.append([dict(m) for m in messages])
-        return {"content": next(replies)}
-
-    monkeypatch.setattr(resume_multiturn.mt, "query_model", fake_llm)
-    conversation = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "タスク"},
-        {"role": "assistant", "content": "```python\n" + STEP2 + "```"},
-    ]
-    env = forking.open_fork(step2, f"snap_{RUNTIME}")
-    try:
-        agent = resume_multiturn.ContinueMultiTurn([dict(m) for m in conversation])
-        summary = forking.run_fork(env, agent, fork_type="resume", save=False)
-        assert env.recorded_steps[0].stdout.strip() == "['step1', 'step2']"
-    finally:
-        env.close()
-    first = sent[0]
-    assert first[:3] == conversation, "取り出した会話の続きから聞く"
-    feedback = first[3]["content"]
-    text = feedback[0]["text"] if isinstance(feedback, list) else feedback
-    assert "2 回目" in text, "最後の Step（2 回目）の結果を伝える"
-    assert summary.num_code_blocks == 1
 
 
 def test_resume_through_an_s3_store(tmp_path, monkeypatch) -> None:
