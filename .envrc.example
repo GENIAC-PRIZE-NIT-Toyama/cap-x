@@ -32,3 +32,14 @@ export MOLMO2_VLM_MODEL=allenai/Molmo2-8B
 # 不特定多数が繋がる場所で使うときだけ、`名前:トークン` をカンマ区切りで設定する。
 # 設定すると、参加者の remote/.env にも CAPX_ENV_SERVER_TOKEN=<トークン> が要る。
 # export CAPX_ENV_SERVER_TOKENS="alice:change-me,bob:change-me-too"
+
+# --- Snapshot / Resume / Fork を使うときだけ -----------------------------
+# 置き場（MinIO）の作り方と確認は docs/Snapshot.md の 4 章。無ければ Snapshot は
+# 使えないが、通常の trial はそのまま動く。
+# export CAPX_SNAPSHOT_S3_ENDPOINT=http://192.168.x.x:9000
+# export CAPX_SNAPSHOT_S3_BUCKET=capx-snapshots
+# export CAPX_SNAPSHOT_S3_ACCESS_KEY_ID=capx-backend
+# export CAPX_SNAPSHOT_S3_SECRET_ACCESS_KEY=change-me
+# 任意
+# export CAPX_SNAPSHOT_S3_REGION=us-east-1
+# export CAPX_SNAPSHOT_S3_PREFIX=v1/

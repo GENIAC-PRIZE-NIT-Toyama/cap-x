@@ -3,50 +3,126 @@
 自分の Agent を書いて、GPU マシンのロボットシミュレータで動かす場所。
 このフォルダの外は触らなくていい。
 
-## 準備
-
-- **Python 3.10〜3.13** と [uv](https://docs.astral.sh/uv/)（`curl -LsSf https://astral.sh/uv/install.sh | sh`）。
-  シミュレータも GPU も要らない（Windows / macOS / Linux）
-- **このリポジトリ**。submodule は要らない（`git clone` だけでよい）
-- **GPU マシンに届くこと**。管理者に聞いた GPU マシンの、セッションを作るポート（例 8080）と、
-  シミュレータに繋ぐポート（19500〜19599）の両方に届く必要がある。学外からは VPN を繋いでおく
-- **LLM のエンドポイント**（OpenAI 互換。vLLM など）。手元 PC から直接呼ぶ
-
 GPU マシン側の準備（管理者向け）は [`docs/remote-server-setup.md`](../docs/remote-server-setup.md)。
 
 ## はじめかた
 
+上から順に、ターミナルで打つ。
+
+### 1. 用意する
+
+- **git**
+- **uv**（Python とライブラリを入れるツール）。入れたらターミナルを開き直す
+
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+
+- **管理者に聞くもの**: GPU マシンの URL、LLM の URL・モデル名・キー。学外からは VPN を繋いでおく
+
+### 2. ダウンロードして設定する
+
 ```bash
 git clone <このリポジトリの URL> cap-x
 cd cap-x/remote
-cp .env.example .env      # 管理者に聞いた値を入れる
-uv sync
-uv run trial.py
+cp .env.example .env
 ```
 
-`agents/example_agent.py` が動けば準備完了。
+`.env` をエディタで開いて、次の 5 つを書く。
+
+| 項目 | 書くもの |
+|---|---|
+| `CAPX_ENV_SERVER_URL` | GPU マシンの URL |
+| `OPENAI_BASE_URL` | LLM の URL |
+| `OPENAI_API_KEY` | LLM のキー。管理者に言われなければ `dummy` のまま |
+| `OPENAI_BASE_MODEL` | LLM のモデル名。分からなければ空のまま 4 へ進むと、選べる名前が出る |
+| `CAPX_LLM_WIRE` | 管理者に言われなければ `chat` のまま |
+
+### 3. 必要なものを入れる
+
+```bash
+uv sync
+```
+
+初回はダウンロードで時間がかかる。
+
+### 4. つながるか確かめる
+
+```bash
+uv run doctor.py
+```
+
+GPU マシンと LLM に届くかを順に調べる。全部 OK なら次へ。駄目な項目には直し方が出る。
+
+### 5. 例の Agent で 1 回動かす
+
+```bash
+uv run trial.py --agent agents/example_agent.py --task cube_stack
+```
+
+同梱の例の Agent で、キューブを積むタスク（`cube_stack`）を 1 回。終わると `task_completed`
+（成功したか）と `reward` が出る。成功しなくても、最後まで走れば準備完了。
+
+### 6. 自分の Agent を作る
+
+```bash
+cp agents/example_agent.py agents/my_agent.py
+```
+
+`agents/my_agent.py` を開いて、`run` の中を書き換える。
+
+- `task.instruction` … やること（ゴール文）
+- `task.api_docs` … ロボットを動かすのに使える関数の説明
+- `env.step(code)` … ロボットを動かす Python コードを送る。stdout / stderr が返る
+- `env.render()` … 今の画像（JPEG）
+
+### 7. 自分の Agent を 1 タスクで試す
+
+```bash
+uv run trial.py --agent agents/my_agent.py --task cube_stack
+```
+
+ほかのタスクで試すときは `--task` を書き換える（[タスク一覧](#タスク一覧)）。
+
+### 8. まとめて評価する
+
+```bash
+uv run suite.py suites/quick.yaml --agent agents/my_agent.py
+```
+
+10 タスクを順に回し、最後にタスクごとの成功率の表が出る。本評価は `suites/full.yaml`（35 タスク）。
+
+---
+
+ここから下は、必要になったときに読む。
+
+## 動作環境
+
+- Python 3.10〜3.13。手元に無ければ `uv sync` が自動で入れる。シミュレータも GPU も要らない
+  （Windows / macOS / Linux）
+- このリポジトリの submodule は要らない（`git clone` だけでよい）
+- GPU マシンの 2 つのポートに届く必要がある。セッションを作るポート（例 8080）と、
+  シミュレータに繋ぐポート（19500〜19599）
+- LLM（OpenAI 互換。vLLM など）は手元 PC から直接呼ぶ。GPU マシンからは呼ばない
+
+## 設定ファイル（`.env`）
 
 `remote/.env` は、どこから実行しても自動で読まれる（すでに設定されている環境変数は上書きしない）。
-`.env` 以外を使うときだけ `--env-file` を付ける（例: `uv run trial.py --env-file openai.env`）。
+`.env` 以外を使うときだけ `--env-file` を付ける（例: `uv run trial.py --agent agents/my_agent.py --task cube_stack --env-file openai.env`）。
 
-動かないときは、原因を一度に調べられる:
+はじめかたの 5 つのほかに、Langfuse（[トレース](#トレースlangfuse)）と Snapshot（[Snapshot](#過去の-step-から分岐するsnapshot)）の
+項目がある。どちらも任意。
 
-```bash
-uv run doctor.py --agent agents/my_agent.py
-```
-
-## タスクを選ぶ
-
-`--task` で選ぶ。省略すると `cube_stack`。
-
-```bash
-uv run trial.py --task libero_object_3
-```
+## タスク一覧
 
 | 種類 | 名前 |
 |---|---|
 | robosuite | `cube_stack`, `cube_lifting`, `cube_restack`, `nut_assembly`, `spill_wipe`, `two_arm_lift` |
 | LIBERO（標準 5 suite、130 タスク） | `libero_spatial_0`〜`9`, `libero_object_0`〜`9`, `libero_goal_0`〜`9`, `libero_10_0`〜`9`, `libero_90_0`〜`89` |
+
+```bash
+uv run trial.py --agent agents/my_agent.py --task libero_object_3
+```
 
 今選べる一覧は `doctor.py` でも見られる。LIBERO のタスクは、やること（ゴール文）が
 タスクごとに違う。`task.instruction` に入っている。
@@ -65,16 +141,43 @@ uv run trial.py --task libero_object_3
 Low-Level は 1 つの動作を細かく書くので、ステップ数を多く使いがち。High と比べるときは、
 予算超過（`budget`）で終わった試行の数も見る。
 
-## 自分の Agent を書く
+## オプション
 
-`agents/example_agent.py` をコピーして中身を書き換える。
+主なもの（`--help` で全部）。
 
-```bash
-cp agents/example_agent.py agents/my_agent.py
-uv run trial.py --agent agents/my_agent.py
-```
+`trial.py`（1 つのタスクを回す）:
 
-クラス名は `Agent` のまま、`BaseAgent` を継承して `run` を書く（例のとおり）。
+| オプション | 既定 | 内容 |
+|---|---|---|
+| `--agent` | `agents/example_agent.py` | Agent ファイル |
+| `--task` | `cube_stack` | タスク名（[タスク一覧](#タスク一覧)） |
+| `--total-trials` | 1 | 試行回数 |
+| `--seed` | 試行番号 | 初期配置の seed |
+| `--model` | `.env` の `OPENAI_BASE_MODEL` | LLM のモデル名 |
+| `--output-dir` | `remote/outputs/` | 結果を置く場所 |
+| `--no-save` | | 結果を保存しない |
+| `--record-video False` | 結果を保存するときは保存する | 動画を保存しない |
+| `--no-trace` | | Langfuse に送らない |
+| `--trace-step-videos` | | `env.step` ごとの動画も Langfuse に送る |
+| `--env-file` | `remote/.env` | 別の設定ファイルを読む |
+
+`suite.py`（スイートの YAML を最初に書く。例 `uv run suite.py suites/quick.yaml --agent agents/my_agent.py`）:
+
+| オプション | 既定 | 内容 |
+|---|---|---|
+| `--agent` | `agents/example_agent.py` | Agent ファイル |
+| `--parallel` | 1 | 同時に回すタスクの数（1〜10） |
+| `--model` | `.env` の `OPENAI_BASE_MODEL` | LLM のモデル名 |
+| `--output-dir` | `remote/outputs/` | 結果を置く場所 |
+| `--no-record-video` | | 動画を保存しない |
+| `--no-trace` | | Langfuse に送らない |
+| `--trace-step-videos` | | `env.step` ごとの動画も Langfuse に送る |
+| `--env-file` | `remote/.env` | 別の設定ファイルを読む |
+
+## Agent の書き方
+
+`agents/example_agent.py` をコピーして中身を書き換える。クラス名は `Agent` のまま、
+`BaseAgent` を継承して `run` を書く（例のとおり）。
 
 - `env.step(code)` … ロボットを動かす Python コードを送る。結果が返る
 - `env.render()` … 今の画像（JPEG）
@@ -138,6 +241,10 @@ LIBERO-90 は、操作の種類・シーン・複雑さが重ならないよう�
 空き（`GET /sessions` のセッション数とメモリ）を確かめ、混んでいれば空くまで待つ（最大 30 分）。
 並列のときは、ほかの人のために 2 枠を空けておく。並べると GPU・LLM サーバを取り合うので、
 `wall_clock` は 1 本ずつより長くなる。並べた数が違う実行どうしで時間を比べない。
+
+```bash
+uv run suite.py suites/full.yaml --agent agents/my_agent.py --parallel 3
+```
 
 | 指標 | 意味 |
 |---|---|
@@ -215,6 +322,16 @@ uv run examples/fork_compare.py --snapshot snap_... --task libero_object_3 --ori
 ```
 
 使い方・仕組み・制約は [docs/Snapshot.md](../docs/Snapshot.md)。
+
+## うまくいかないとき
+
+自分の Agent ファイルまで含めて、原因を一度に調べられる:
+
+```bash
+uv run doctor.py --agent agents/my_agent.py
+```
+
+GPU マシン・認証・空き・LLM・Agent ファイルを順に調べて、駄目な項目には直し方を出す。
 
 ## 注意
 
