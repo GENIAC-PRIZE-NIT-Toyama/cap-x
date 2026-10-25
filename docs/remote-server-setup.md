@@ -105,7 +105,7 @@ curl http://localhost:8080/health     # 返事があれば backend は動いて�
 ```bash
 cd remote
 uv run doctor.py      # 到達・タスク一覧・空きなどを順に調べる
-uv run trial.py       # cube_stack を 1 回
+uv run trial.py --agent agents/example_agent.py --task cube_stack   # 例の Agent で cube_stack を 1 回
 ```
 
 ## 補足
