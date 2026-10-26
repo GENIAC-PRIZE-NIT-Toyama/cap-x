@@ -47,3 +47,7 @@ wandb/
 *.ico
 *.webp
 check.md
+
+# Coding Agent
+AGENTS.override.md
+CLAUDE.local.md
