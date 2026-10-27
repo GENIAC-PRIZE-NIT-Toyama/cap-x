@@ -120,6 +120,9 @@ class Config:
     生成コードの変数に画像を何枚も持つと大きくなる。worker のメモリ上限（4〜5GB）の中で、
     保存の途中に一時的に数倍のメモリを使うので、大きくしすぎない。"""
 
+    worker_max_steps: int = 20
+    """1 trial で `step()` を呼べる回数。worker に `--max-steps` で渡す。"""
+
 
 class SessionManager:
     def __init__(
@@ -204,6 +207,7 @@ class SessionManager:
             limits=limits,
             resume=snapshot is not None,
             snapshot_max_mb=max(1, self.config.snapshot_max_bytes // (1024 * 1024)),
+            max_steps=self.config.worker_max_steps,
             secrets={
                 "CAPX_CURVE_SERVER_SECRET": server_secret.decode("ascii"),
                 # クライアントの鍵に加え、backend 自身の生存確認用の鍵も許可する
