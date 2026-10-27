@@ -62,9 +62,8 @@ from capx.bench.schema import git_info  # noqa: E402
 
 #: `max_steps` を省略したときの値（worker の既定と同じ）。
 DEFAULT_MAX_STEPS = Budget().max_steps
-#: スイートに書ける `max_steps` の上限。GPU マシン側の上限（worker の起動時に決まる。
-#: 今は 10）を 20 に上げる予定で、それに合わせてある。上げるまでは 11 回目の `step()` が
-#: GPU マシン側で止まり、予算超過（`budget`）として数えられる。
+#: スイートに書ける `max_steps` の上限。GPU マシン側の上限（backend の
+#: `--worker-max-steps`。既定 20）に合わせてある。
 MAX_STEPS_LIMIT = 20
 
 #: 同時に回すタスクの数（`--parallel`）の上限。GPU マシンの枠は全員で共有する。
