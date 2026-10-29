@@ -49,6 +49,7 @@ def main(
     max_lifetime_min: float = 120.0,
     gpu_uuids: str = os.environ.get("CAPX_GPU_UUIDS", ""),
     snapshot_max_mb: int = 64,
+    worker_max_steps: int = 20,
 ) -> None:
     """
     Args:
@@ -62,6 +63,7 @@ def main(
             番号ではなく UUID を使うのは、`nvidia-smi` と CUDA で番号の付け方が
             ずれるマシンがあり、番号だと別のカードを掴むため。
         snapshot_max_mb: 1 つの Snapshot の上限（MB）。worker にも同じ値を渡す。
+        worker_max_steps: 1 trial で `step()` を呼べる回数。worker に渡す。
     """
     import uvicorn
 
@@ -89,6 +91,7 @@ def main(
         # 直接届かないので、中継（capx-proxy-molmo）の宛先を docker.py が渡す。
         worker_env={k: os.environ[k] for k in WORKER_ENV_KEYS if os.environ.get(k)},
         snapshot_max_bytes=snapshot_max_mb * 1024 * 1024,
+        worker_max_steps=worker_max_steps,
     )
 
     from capx.snapshot.store import S3Store, store_from_env

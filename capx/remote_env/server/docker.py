@@ -92,6 +92,8 @@ class RunSpec:
     resume: bool = False
     #: 1 つの Snapshot の上限（MB）。backend の設定と揃える。
     snapshot_max_mb: int = 64
+    #: 1 trial で `step()` を呼べる回数。backend の設定と揃える。
+    max_steps: int = 20
 
     @property
     def container_name(self) -> str:
@@ -179,6 +181,7 @@ def run_command(spec: RunSpec) -> list[str]:
     if spec.task_id:
         cmd += ["--task-id", spec.task_id]
     cmd += ["--snapshot-max-mb", str(spec.snapshot_max_mb)]
+    cmd += ["--max-steps", str(spec.max_steps)]
     if spec.resume:
         cmd += ["--resume"]
     if spec.overrides:

@@ -263,3 +263,9 @@ def test_the_molmo_proxy_takes_its_upstream_from_the_same_variable() -> None:
     block = compose.split("proxy-molmo:", 1)[1]
     assert "${MOLMO2_VLM_URL" in block
     assert "MOLMO_UPSTREAM" not in compose
+
+
+def test_step_limit_is_passed_to_the_worker() -> None:
+    """渡し忘れると worker の既定（10）で止まり、スイートの `max_steps` が効かない。"""
+    assert _flag_values(d.run_command(_spec()), "--max-steps") == ["20"]
+    assert _flag_values(d.run_command(_spec(max_steps=7)), "--max-steps") == ["7"]
