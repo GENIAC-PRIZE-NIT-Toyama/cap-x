@@ -11,10 +11,13 @@
   import しただけでは読まない（そのプロセスの環境変数を書き換えてしまうため）。
 - python-dotenv は remote/ の依存。ルートの環境（tests/ がサブプロセスで走らせるとき）には
   無いことがあるので、そのときは `--env-file` を明示したときだけ止める。
+- Windows では、読む前に UTF-8 モードで起動し直す（`ensure_utf8()`）。
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -66,4 +69,24 @@ def load(argv: list[str] = sys.argv) -> Path | None:
     return path
 
 
+def ensure_utf8(argv: list[str] = sys.argv) -> None:
+    """Windows では Python の UTF-8 モードで起動し直す。
+
+    Windows の既定の文字コードは cp932 で、`capx` が結果を保存する `write_text()` は
+    encoding を指定しないため、LLM の出力に cp932 に無い文字（`ž` など）があると
+    保存で `UnicodeEncodeError` になる。UTF-8 モードは起動後には切り替えられないので、
+    `PYTHONUTF8=1` を付けて同じコマンドを子プロセスで走らせ、その終了コードで終わる。
+    """
+    if os.name != "nt" or sys.flags.utf8_mode or not _run_as_remote_script(argv):
+        return
+    env = {**os.environ, "PYTHONUTF8": "1"}
+    proc = subprocess.Popen([sys.executable, "-X", "utf8", *argv], env=env)
+    while True:
+        try:
+            sys.exit(proc.wait())
+        except KeyboardInterrupt:  # Ctrl+C は子にも届くので、子が終わるのを待つ
+            continue
+
+
+ensure_utf8()
 load()
